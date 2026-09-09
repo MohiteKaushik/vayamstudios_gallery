@@ -37,7 +37,12 @@
   "vectorize": [
     {
       "binding": "FACE_INDEX",
-      "index_name": "vayam-faces"
+      "index_name": "vayam-faces",
+      // Cloudflare cannot emulate Vectorize locally, so without this the
+      // binding is simply absent in dev and every upload reports its faces as
+      // stored but not searchable. "remote" makes local development talk to
+      // the real index. It needs "wrangler login" to have been run.
+      "remote": true
     }
   ],
 

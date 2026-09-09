@@ -70,8 +70,11 @@ export type UploadedPhoto = {
   photoId: string;
   bytesIn: number;
   bytesOut: number;
+  /** Faces detected in the photo and stored in R2. */
   faces: number;
-  /** True when the photo stored fine but its faces could not be indexed. */
+  /** Of those, how many reached the search index. */
+  indexed: number;
+  /** True when the faces are stored but not yet searchable. */
   indexPending: boolean;
 };
 
@@ -166,11 +169,13 @@ export async function uploadPhoto(opts: {
   });
 
   let indexPending = false;
+  let indexedCount = 0;
   if (!indexed.ok) {
-    indexPending = true;
+    indexPending = faces.length > 0;
   } else {
-    const result = (await indexed.json()) as { warning?: string };
-    indexPending = result.warning === "no-face-index";
+    const result = (await indexed.json()) as { warning?: string; indexed?: number };
+    indexedCount = result.indexed ?? 0;
+    indexPending = faces.length > 0 && indexedCount === 0;
   }
 
   return {
@@ -178,6 +183,7 @@ export async function uploadPhoto(opts: {
     bytesIn: file.size,
     bytesOut: encoded.blob.size + thumbEncoded.blob.size,
     faces: faces.length,
+    indexed: indexedCount,
     indexPending,
   };
 }
@@ -185,7 +191,11 @@ export async function uploadPhoto(opts: {
 export type BulkProgress = {
   processed: number;
   total: number;
+  /** Faces detected and stored. */
   faces: number;
+  /** Of those, how many are searchable. Reporting only the first is how
+   *  "7 faces indexed" appeared when none of them actually were. */
+  indexed: number;
   failed: number;
   bytesIn: number;
   bytesOut: number;
@@ -220,6 +230,7 @@ export async function uploadPhotos(opts: {
     processed: 0,
     total: files.length,
     faces: 0,
+    indexed: 0,
     failed: 0,
     bytesIn: 0,
     bytesOut: 0,
@@ -251,6 +262,7 @@ export async function uploadPhotos(opts: {
         onStep: () => onProgress({ ...p }),
       });
       p.faces += r.faces;
+      p.indexed += r.indexed;
       p.bytesIn += r.bytesIn;
       p.bytesOut += r.bytesOut;
       if (r.indexPending) p.indexPending += 1;

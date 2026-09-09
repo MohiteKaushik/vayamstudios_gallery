@@ -203,14 +203,24 @@ function CollectionEditor({ userId, collectionId, name }: { userId: string; coll
       }
 
       const saved = uploadSavings(r);
-      const savedNote = r.bytesIn > 0 && saved > 0 ? ` · ${saved}% smaller` : "";
+      // Detected and indexed are different numbers. Reporting the first as if
+      // it were the second is how "7 faces indexed" appeared when none were.
+      const faceNote =
+        r.faces === 0
+          ? "no faces found"
+          : r.indexed >= r.faces
+            ? `${formatCount(r.faces, "face")} searchable`
+            : `${formatCount(r.faces, "face")} found, ${r.indexed} searchable`;
+      const savedNote = r.bytesIn > 0 && saved > 0 ? ` · saved ${saved}% storage` : "";
       const failedNote = r.failed > 0 ? ` · ${r.failed} failed` : "";
-      toast.success(
-        `Added ${formatCount(added, "photo")} · ${formatCount(r.faces, "face")} indexed${savedNote}${failedNote}`,
-      );
+      toast.success(`Added ${formatCount(added, "photo")} · ${faceNote}${savedNote}${failedNote}`);
+
       if (r.failed > 0 && r.firstError) toast.error(r.firstError);
       if (r.indexPending > 0) {
-        toast.warning(`${r.indexPending} photo(s) stored but not searchable yet: the face index is unavailable.`);
+        toast.warning(
+          `${r.indexPending} photo(s) stored, and their faces kept, but the search ` +
+            "index was unreachable so they are not findable yet. Nothing is lost.",
+        );
       }
       qc.invalidateQueries({ queryKey: ["shared-photos", collectionId] });
       qc.invalidateQueries({ queryKey: ["shared-collections"] });

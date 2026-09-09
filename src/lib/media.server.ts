@@ -40,7 +40,7 @@ import {
   createMember,
   ensureRole,
 } from "./auth/members.server.ts";
-import { indexPhotoFaces, type VectorizeIndex } from "./face-index.server.ts";
+import { indexPhotoFaces, removePhotoFaces, type VectorizeIndex } from "./face-index.server.ts";
 import type { R2Bucket } from "./storage.server.ts";
 
 export type MediaEnv = {
@@ -155,6 +155,7 @@ export async function handleMediaRequest(
   if (kind === "session") return handleSessionExchange(request, env);
   if (kind === "upload") return handleUpload(request, env, url);
   if (kind === "index") return handleIndex(request, env);
+  if (kind === "delete") return handleDelete(request, env);
 
   // /media/p/{collection}/{photo} and /media/t/{collection}/{photo}
   if (kind !== "p" && kind !== "t") return null;
@@ -398,20 +399,34 @@ async function handleIndex(request: Request, env: MediaEnv): Promise<Response> {
     }
   }
 
-  // Boxes first. If the index write fails the photo is still browsable, and a
-  // re-index can fill the gap; the reverse would leave searchable faces with no
-  // way to draw them.
+  // R2 holds the descriptors as well as the boxes, and it is written first.
+  //
+  // That makes R2 the record of what was detected and Vectorize a derived
+  // index that can be rebuilt from it. Without this, a photo indexed while the
+  // index was unreachable would lose its faces permanently, and the only way
+  // back would be re-uploading and re-detecting every photo. Detection is the
+  // expensive step; never throw it away.
   await env.PHOTOS.put(
     facesKey(cid, photoId),
-    JSON.stringify(faces.map((f) => ({ box: f.box, score: f.score }))),
+    JSON.stringify({
+      photoId,
+      collectionId: cid,
+      indexedAt: null as number | null,
+      faces: faces.map((f) => ({ box: f.box, score: f.score, descriptor: f.descriptor })),
+    }),
     { httpMetadata: { contentType: "application/json", cacheControl: "no-store" } },
   );
 
   let indexed = 0;
   if (faces.length > 0) {
     if (!env.FACE_INDEX) {
-      // Local development without Vectorize. Say so rather than pretend.
-      return json({ indexed: 0, faces: faces.length, warning: "no-face-index" }, 202);
+      // Cloudflare cannot emulate Vectorize locally. The faces are safe in R2
+      // and `npm run reindex` puts them in the index, so this is a delay rather
+      // than a loss. Say which it is.
+      return json(
+        { indexed: 0, faces: faces.length, stored: true, warning: "no-face-index" },
+        202,
+      );
     }
     const result = await indexPhotoFaces(env.FACE_INDEX, {
       collectionId: cid,
@@ -419,7 +434,156 @@ async function handleIndex(request: Request, env: MediaEnv): Promise<Response> {
       descriptors: faces.map((f) => f.descriptor),
     });
     indexed = result.indexed;
+
+    // Mark it indexed so a rebuild knows what it can skip.
+    if (indexed > 0) {
+      await markIndexed(env, cid, photoId).catch(() => undefined);
+    }
   }
 
-  return json({ indexed, faces: faces.length }, 200);
+  return json({ indexed, faces: faces.length, stored: true }, 200);
+}
+
+async function markIndexed(env: MediaEnv, cid: string, photoId: string): Promise<void> {
+  const key = facesKey(cid, photoId);
+  const existing = await env.PHOTOS.get(key);
+  if (!existing) return;
+  const record = await existing.json<{ faces: unknown[] }>();
+  await env.PHOTOS.put(key, JSON.stringify({ ...record, indexedAt: Date.now() }), {
+    httpMetadata: { contentType: "application/json", cacheControl: "no-store" },
+  });
+}
+
+export type StoredFaces = {
+  photoId: string;
+  collectionId: string;
+  indexedAt: number | null;
+  faces: { box: IncomingFace["box"]; score: number; descriptor: number[] }[];
+};
+
+/* -------------------------------------------------------------------------- */
+/*                                 Deleting                                   */
+/* -------------------------------------------------------------------------- */
+
+/** How many photos one delete request may name. */
+export const MAX_DELETE_BATCH = 500;
+
+export type DeleteRequest = {
+  collection: string;
+  /** Specific photos, or omitted to delete the whole collection. */
+  photos?: string[];
+};
+
+/**
+ * Removes photos, or a whole collection.
+ *
+ * Four things exist per photo and all four have to go: the image, the
+ * thumbnail, the record, and the faces. Deleting the image alone leaves the
+ * photo in every grid and every past scan result, looking broken.
+ *
+ * Vectorize entries are removed too, otherwise a deleted photo keeps matching
+ * and members are shown a result that 404s when they open it.
+ *
+ * Batched rather than one request per photo, because clearing a collection of
+ * forty thousand would otherwise be forty thousand round trips.
+ */
+async function handleDelete(request: Request, env: MediaEnv): Promise<Response> {
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+  const userId = await currentUserId(request, env);
+  if (!userId) return json({ error: "Not signed in" }, 401);
+  const member = await getMemberById(env.PHOTOS, userId);
+  if (!member || member.role !== "admin") return json({ error: "Admins only" }, 403);
+
+  let body: DeleteRequest;
+  try {
+    body = (await request.json()) as DeleteRequest;
+  } catch {
+    return json({ error: "Malformed body" }, 400);
+  }
+
+  const cid = body.collection ?? "";
+  if (!isSafeId(cid)) return json({ error: "Unknown collection" }, 400);
+
+  const wholeCollection = !Array.isArray(body.photos);
+  let photoIds: string[];
+
+  if (wholeCollection) {
+    photoIds = await listPhotoIds(env.PHOTOS, cid);
+  } else {
+    photoIds = body.photos!.filter(isSafeId);
+    if (photoIds.length === 0) return json({ error: "No photos named" }, 400);
+    if (photoIds.length > MAX_DELETE_BATCH) {
+      return json({ error: `At most ${MAX_DELETE_BATCH} photos per request` }, 413);
+    }
+  }
+
+  let deleted = 0;
+  let unindexed = 0;
+
+  for (let i = 0; i < photoIds.length; i += 100) {
+    const slice = photoIds.slice(i, i + 100);
+
+    // Clear the index first. A photo removed from storage but left in the index
+    // is worse than the reverse: it keeps appearing in searches and 404s.
+    if (env.FACE_INDEX) {
+      await Promise.all(
+        slice.map(async (photoId) => {
+          const stored = await readStoredFaces(env.PHOTOS, cid, photoId);
+          const count = stored?.faces.length ?? 0;
+          if (count === 0) return;
+          await removePhotoFaces(env.FACE_INDEX!, { photoId, faceCount: count })
+            .then(() => { unindexed += count; })
+            .catch(() => undefined);
+        }),
+      );
+    }
+
+    await env.PHOTOS.delete(
+      slice.flatMap((photoId) => [
+        photoKey(cid, photoId),
+        thumbKey(cid, photoId),
+        photoMetaKey(cid, photoId),
+        facesKey(cid, photoId),
+      ]),
+    );
+    deleted += slice.length;
+  }
+
+  if (wholeCollection) {
+    await env.PHOTOS.delete(`meta/collection/${cid}`).catch(() => undefined);
+  }
+
+  return json({ deleted, unindexed, collectionRemoved: wholeCollection });
+}
+
+/** Every photo id in a collection, read from the record keys. */
+async function listPhotoIds(bucket: R2Bucket, cid: string): Promise<string[]> {
+  const prefix = `meta/photo/${cid}/`;
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await bucket.list({ prefix, cursor, limit: 1000 });
+    for (const o of page.objects) {
+      const id = o.key.slice(prefix.length);
+      if (isSafeId(id)) ids.push(id);
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return ids;
+}
+
+/** Reads back what was detected for one photo, index or no index. */
+export async function readStoredFaces(
+  bucket: R2Bucket,
+  cid: string,
+  photoId: string,
+): Promise<StoredFaces | null> {
+  const obj = await bucket.get(facesKey(cid, photoId));
+  if (!obj) return null;
+  try {
+    return await obj.json<StoredFaces>();
+  } catch {
+    return null;
+  }
 }
