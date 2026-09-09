@@ -50,6 +50,11 @@ type R2Object = {
 type R2PutOptions = {
   httpMetadata?: { contentType?: string; cacheControl?: string };
   customMetadata?: Record<string, string>;
+  /**
+   * Conditional write. `etagDoesNotMatch: "*"` means "only if nothing is here",
+   * which is how a key is claimed safely without transactions.
+   */
+  onlyIf?: { etagMatches?: string; etagDoesNotMatch?: string };
 };
 
 type R2ListOptions = {
