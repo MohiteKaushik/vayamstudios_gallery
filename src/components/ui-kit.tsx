@@ -1,4 +1,10 @@
-import { forwardRef, type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from "react";
+import {
+  forwardRef,
+  type ButtonHTMLAttributes,
+  type HTMLAttributes,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -65,19 +71,56 @@ export function FieldError({ message }: { message?: string | undefined }) {
 
 /* ----------------------------------- Card ---------------------------------- */
 
+/**
+ * A card. When it is given something to do, it behaves like a control.
+ *
+ * A div with an onClick responds to a mouse and to nothing else: no keyboard,
+ * no screen reader, no role, and unreliable behaviour under touch. Every
+ * clickable card in the product was built that way, so this adds the missing
+ * parts in one place rather than at each call site: a button role, focus
+ * order, Enter and Space, and a visible focus ring.
+ *
+ * A card that already contains its own controls stays a div, because nesting a
+ * button inside a button is invalid and swallows the inner one's clicks.
+ */
 export function GlassCard({
   className,
   interactive,
+  onClick,
+  onKeyDown,
+  role,
+  tabIndex,
   ...rest
 }: HTMLAttributes<HTMLDivElement> & { interactive?: boolean }) {
+  const actsAsButton = !!onClick && role !== "presentation";
+
   return (
     <div
       className={cn(
         "glass-surface rounded-3xl",
         interactive &&
           "press cursor-pointer hover:shadow-[var(--shadow-lifted)] hover:-translate-y-0.5",
+        actsAsButton && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         className,
       )}
+      {...(actsAsButton
+        ? {
+            role: role ?? "button",
+            tabIndex: tabIndex ?? 0,
+            onClick,
+            onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
+              onKeyDown?.(e);
+              if (e.defaultPrevented) return;
+              // Only when the card itself has focus. Otherwise a space typed
+              // into a field inside the card would activate the whole card.
+              if (e.target !== e.currentTarget) return;
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                (e.currentTarget as HTMLDivElement).click();
+              }
+            },
+          }
+        : { role, tabIndex, onClick, onKeyDown })}
       {...rest}
     />
   );

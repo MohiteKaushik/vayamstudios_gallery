@@ -18,9 +18,48 @@
  * rather than costing Worker processor time.
  */
 
+import { supabase } from "@/integrations/supabase/client";
 import { detectFacesThorough } from "./face";
 import { encodeImage, savingsPercent } from "./encode";
 import { downscale, fileToImage } from "./images";
+
+/**
+ * Trades the sign-in the app currently uses for a session the Worker accepts.
+ *
+ * Needed because the migration is mid-flight: storage moved to R2 before
+ * sign-in did, so without this every upload is refused by a Worker that has
+ * never heard of the caller. Runs once per batch, not once per photo.
+ *
+ * Goes away when sign-in itself moves across.
+ */
+let sessionReady: Promise<void> | null = null;
+
+export async function ensureUploadSession(force = false): Promise<void> {
+  if (force) sessionReady = null;
+  if (!sessionReady) {
+    sessionReady = (async () => {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error("You are signed out. Sign in again and retry.");
+
+      const res = await fetch("/media/session", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        sessionReady = null;
+        throw new Error(await readError(res, "Could not start an upload session"));
+      }
+      const who = (await res.json()) as { role?: string };
+      if (who.role !== "admin") {
+        sessionReady = null;
+        throw new Error("This account is not an operator, so it cannot upload.");
+      }
+    })();
+  }
+  return sessionReady;
+}
 
 /** Long edge of the stored image. */
 export const STORE_MAX_EDGE = 2048;
@@ -152,6 +191,14 @@ export type BulkProgress = {
   bytesOut: number;
   indexPending: number;
   current?: string;
+  /**
+   * Why the first failure happened.
+   *
+   * Reporting "added 0 photos" with no reason, which is what this did before,
+   * is the worst possible outcome: it looks like the upload worked and found
+   * nothing, when in fact every single one was refused.
+   */
+  firstError?: string;
 };
 
 /**
@@ -180,6 +227,18 @@ export async function uploadPhotos(opts: {
   };
   onProgress({ ...p });
 
+  // One handshake for the whole batch. If it fails, every photo would fail for
+  // the same reason, so say so once instead of failing a thousand times.
+  try {
+    await ensureUploadSession();
+  } catch (e) {
+    p.firstError = e instanceof Error ? e.message : "Could not start an upload session";
+    p.failed = files.length;
+    p.processed = files.length;
+    onProgress({ ...p });
+    return p;
+  }
+
   for (const file of files) {
     if (opts.signal?.aborted) break;
     p.current = file.name;
@@ -198,6 +257,7 @@ export async function uploadPhotos(opts: {
     } catch (e) {
       console.error(file.name, e);
       p.failed += 1;
+      p.firstError ??= e instanceof Error ? e.message : String(e);
     }
     p.processed += 1;
     onProgress({ ...p });

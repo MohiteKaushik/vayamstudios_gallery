@@ -166,6 +166,7 @@ function Collections({ userId, isAdmin }: { userId: string; isAdmin: boolean }) 
               <GlassCard
                 key={c.id}
                 interactive
+                aria-label={`Open ${c.name}`}
                 onClick={() => navigate({ to: ".", search: { shared: c.id } })}
                 className="group overflow-hidden"
               >
@@ -253,12 +254,25 @@ function AdminCollection({
     if (!files.length) return;
     try {
       const r = await uploadPhotos({ collectionId, files, onProgress: setProgress });
-      // Report what the re-encode saved, so the storage bill stays visible.
+      const added = r.processed - r.failed;
+
+      // Nothing added means every photo was refused for the same reason. Saying
+      // "added 0 photos" without it reads like success over an empty folder.
+      if (added === 0) {
+        toast.error(r.firstError ?? "No photos could be added");
+        return;
+      }
+
       const saved = uploadSavings(r);
       const savedNote = r.bytesIn > 0 && saved > 0 ? ` · ${saved}% smaller` : "";
+      const failedNote = r.failed > 0 ? ` · ${r.failed} failed` : "";
       toast.success(
-        `Added ${formatCount(r.processed - r.failed, "photo")} · ${formatCount(r.faces, "face")} indexed${savedNote}`,
+        `Added ${formatCount(added, "photo")} · ${formatCount(r.faces, "face")} indexed${savedNote}${failedNote}`,
       );
+      if (r.failed > 0 && r.firstError) toast.error(r.firstError);
+      if (r.indexPending > 0) {
+        toast.warning(`${r.indexPending} photo(s) stored but not searchable yet: the face index is unavailable.`);
+      }
       qc.invalidateQueries({ queryKey: ["shared-photos", collectionId] });
       qc.invalidateQueries({ queryKey: ["shared-collections"] });
     } catch (e) {

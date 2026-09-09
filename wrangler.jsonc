@@ -1,9 +1,15 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "vayamstudios-gallery",
-  "compatibility_date": "2026-09-10",
+  // Must not run ahead of the workerd bundled with the installed wrangler.
+  // A date in the future fails to boot with ERR_FUTURE_COMPATIBILITY_DATE,
+  // so raise this only alongside a wrangler upgrade.
+  "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "@tanstack/react-start/server-entry",
+  // Our own entry, which handles /media/* and then hands everything else to
+  // TanStack. Pointing this at the framework entry instead means the media
+  // routes never run and every photo request 404s.
+  "main": "src/server.ts",
   "observability": { "enabled": true },
 
   // The interface is served as static assets. Those are free and unlimited on
