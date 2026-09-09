@@ -10,10 +10,9 @@ import { PhotoViewer } from "@/components/PhotoViewer";
 import { EmptyState, GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
 import { supabase } from "@/integrations/supabase/client";
 import { useRequireAuth } from "@/lib/auth-gate";
-import { scanSharedCollection, NoFaceProfileError } from "@/lib/scan";
+import { scanSharedCollection, NoFaceProfileError, type ScanProgress as ScanState } from "@/lib/scan";
 import { formatCount } from "@/lib/images";
-import { savingsPercent } from "@/lib/encode";
-import { indexSharedPhotos, type Progress } from "@/lib/pipeline";
+import { uploadPhotos, uploadSavings, type BulkProgress } from "@/lib/upload";
 import { useIsAdmin } from "@/lib/roles";
 
 export const Route = createFileRoute("/collections")({
@@ -234,7 +233,7 @@ function AdminCollection({
 }) {
   const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [progress, setProgress] = useState<Progress | null>(null);
+  const [progress, setProgress] = useState<BulkProgress | null>(null);
   const [open, setOpen] = useState<number | null>(null);
 
   const photos = useQuery({
@@ -253,10 +252,10 @@ function AdminCollection({
     const files = Array.from(list ?? []).filter((f) => f.type.startsWith("image/"));
     if (!files.length) return;
     try {
-      const r = await indexSharedPhotos({ userId, collectionId, files, onProgress: setProgress });
+      const r = await uploadPhotos({ collectionId, files, onProgress: setProgress });
       // Report what the re-encode saved, so the storage bill stays visible.
-      const saved = savingsPercent(r.bytesIn ?? 0, r.bytesOut ?? 0);
-      const savedNote = (r.bytesIn ?? 0) > 0 && saved > 0 ? ` · ${saved}% smaller` : "";
+      const saved = uploadSavings(r);
+      const savedNote = r.bytesIn > 0 && saved > 0 ? ` · ${saved}% smaller` : "";
       toast.success(
         `Added ${formatCount(r.processed - r.failed, "photo")} · ${formatCount(r.faces, "face")} indexed${savedNote}`,
       );
@@ -337,7 +336,7 @@ function MemberCollection({
   description?: string | null | undefined;
 }) {
   const qc = useQueryClient();
-  const [progress, setProgress] = useState<Progress | null>(null);
+  const [progress, setProgress] = useState<ScanState | null>(null);
   const [open, setOpen] = useState<number | null>(null);
   const [scanComplete, setScanComplete] = useState(false);
 

@@ -1,0 +1,210 @@
+/**
+ * Admin upload, from the browser to R2 and the face index.
+ *
+ * Three requests per photo, in this order:
+ *
+ *   1. the stored image      POST /media/upload
+ *   2. a grid thumbnail      POST /media/upload?kind=thumb
+ *   3. the faces found in it POST /media/index
+ *
+ * The thumbnail is the reason a gallery of forty thousand photos opens quickly.
+ * A grid showing two hundred tiles at full size would pull hundreds of
+ * megabytes; the same grid on thumbnails pulls a few. The full image is only
+ * fetched when someone actually opens one.
+ *
+ * Face detection stays in the browser, so the photograph itself never leaves
+ * the machine for analysis and the server only ever receives 128 numbers per
+ * face. That also means the work scales with the number of admins uploading
+ * rather than costing Worker processor time.
+ */
+
+import { detectFacesThorough } from "./face";
+import { encodeImage, savingsPercent } from "./encode";
+import { downscale, fileToImage } from "./images";
+
+/** Long edge of the stored image. */
+export const STORE_MAX_EDGE = 2048;
+/** Long edge of the grid thumbnail. */
+export const THUMB_MAX_EDGE = 512;
+
+export type UploadedPhoto = {
+  photoId: string;
+  bytesIn: number;
+  bytesOut: number;
+  faces: number;
+  /** True when the photo stored fine but its faces could not be indexed. */
+  indexPending: boolean;
+};
+
+async function postBytes(
+  url: string,
+  blob: Blob,
+  headers: Record<string, string>,
+): Promise<Response> {
+  return fetch(url, {
+    method: "POST",
+    // The session cookie is what authorises this; it must be sent.
+    credentials: "same-origin",
+    headers: { "content-type": blob.type, ...headers },
+    body: blob,
+  });
+}
+
+async function readError(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: string };
+    return body.error ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Stores one photo and indexes its faces.
+ *
+ * The full image is uploaded before anything else, so a failure part-way
+ * through leaves a viewable photo rather than an orphaned record. Faces are
+ * indexed last for the same reason.
+ */
+export async function uploadPhoto(opts: {
+  collectionId: string;
+  file: File;
+  onStep?: (step: "encoding" | "storing" | "detecting" | "indexing") => void;
+  signal?: AbortSignal;
+}): Promise<UploadedPhoto> {
+  const { collectionId, file, onStep } = opts;
+
+  onStep?.("encoding");
+  const img = await fileToImage(file);
+  const stored = downscale(img, STORE_MAX_EDGE);
+  const encoded = await encodeImage(stored.canvas);
+
+  onStep?.("storing");
+  const created = await postBytes(
+    `/media/upload?collection=${encodeURIComponent(collectionId)}`,
+    encoded.blob,
+    {
+      "x-file-name": file.name,
+      "x-width": String(stored.canvas.width),
+      "x-height": String(stored.canvas.height),
+    },
+  );
+  if (!created.ok) throw new Error(await readError(created, "Could not store the photo"));
+  const { photoId } = (await created.json()) as { photoId: string };
+
+  // A thumbnail failing is not worth losing the photo over; the grid can fall
+  // back to the full image for that one.
+  const thumb = downscale(img, THUMB_MAX_EDGE);
+  const thumbEncoded = await encodeImage(thumb.canvas);
+  await postBytes(
+    `/media/upload?collection=${encodeURIComponent(collectionId)}&photo=${photoId}&kind=thumb`,
+    thumbEncoded.blob,
+    {},
+  ).catch(() => undefined);
+
+  onStep?.("detecting");
+  // Several passes over the frame. A single downscaled pass loses every face
+  // that is small in the original, and a face never detected can never match.
+  const analysis = await detectFacesThorough(img);
+  const scale = stored.canvas.width / analysis.canvas.width;
+  const faces = analysis.faces.map((f) => ({
+    descriptor: f.descriptor,
+    score: f.score,
+    box: {
+      x: Math.round(f.box.x * scale),
+      y: Math.round(f.box.y * scale),
+      width: Math.round(f.box.width * scale),
+      height: Math.round(f.box.height * scale),
+    },
+  }));
+
+  onStep?.("indexing");
+  const indexed = await fetch("/media/index", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ collection: collectionId, photoId, faces }),
+  });
+
+  let indexPending = false;
+  if (!indexed.ok) {
+    indexPending = true;
+  } else {
+    const result = (await indexed.json()) as { warning?: string };
+    indexPending = result.warning === "no-face-index";
+  }
+
+  return {
+    photoId,
+    bytesIn: file.size,
+    bytesOut: encoded.blob.size + thumbEncoded.blob.size,
+    faces: faces.length,
+    indexPending,
+  };
+}
+
+export type BulkProgress = {
+  processed: number;
+  total: number;
+  faces: number;
+  failed: number;
+  bytesIn: number;
+  bytesOut: number;
+  indexPending: number;
+  current?: string;
+};
+
+/**
+ * Uploads a batch, one photo at a time.
+ *
+ * Sequential on purpose. Detection runs several model passes per photo and is
+ * the slow step; firing ten at once would contend for the same GPU and finish
+ * no sooner, while making the progress figures meaningless and the browser
+ * unresponsive.
+ */
+export async function uploadPhotos(opts: {
+  collectionId: string;
+  files: File[];
+  onProgress: (p: BulkProgress) => void;
+  signal?: AbortSignal;
+}): Promise<BulkProgress> {
+  const { collectionId, files, onProgress } = opts;
+  const p: BulkProgress = {
+    processed: 0,
+    total: files.length,
+    faces: 0,
+    failed: 0,
+    bytesIn: 0,
+    bytesOut: 0,
+    indexPending: 0,
+  };
+  onProgress({ ...p });
+
+  for (const file of files) {
+    if (opts.signal?.aborted) break;
+    p.current = file.name;
+    onProgress({ ...p });
+    try {
+      const r = await uploadPhoto({
+        collectionId,
+        file,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+        onStep: () => onProgress({ ...p }),
+      });
+      p.faces += r.faces;
+      p.bytesIn += r.bytesIn;
+      p.bytesOut += r.bytesOut;
+      if (r.indexPending) p.indexPending += 1;
+    } catch (e) {
+      console.error(file.name, e);
+      p.failed += 1;
+    }
+    p.processed += 1;
+    onProgress({ ...p });
+  }
+
+  return p;
+}
+
+/** How much smaller the stored copies are than what was handed in. */
+export const uploadSavings = (p: BulkProgress) => savingsPercent(p.bytesIn, p.bytesOut);

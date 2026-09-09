@@ -29,11 +29,18 @@
 
 import { verifySessionToken, readCookie } from "./auth/session.ts";
 import { getMemberById } from "./auth/members.server.ts";
+import { indexPhotoFaces, type VectorizeIndex } from "./face-index.server.ts";
 import type { R2Bucket } from "./storage.server.ts";
 
 export type MediaEnv = {
   PHOTOS: R2Bucket;
   SESSION_SECRET?: string;
+  /**
+   * The face index. Optional so local development runs without it: Cloudflare
+   * cannot emulate Vectorize, and refusing to boot without it would make the
+   * whole app undevelopable offline.
+   */
+  FACE_INDEX?: VectorizeIndex;
 };
 
 /** Prefix every image route sits under. */
@@ -130,6 +137,7 @@ export async function handleMediaRequest(
   const [kind, ...rest] = segments;
 
   if (kind === "upload") return handleUpload(request, env, url);
+  if (kind === "index") return handleIndex(request, env);
 
   // /media/p/{collection}/{photo} and /media/t/{collection}/{photo}
   if (kind !== "p" && kind !== "t") return null;
@@ -218,4 +226,90 @@ async function handleUpload(request: Request, env: MediaEnv, url: URL): Promise<
 /** The path a browser should request for a stored image. */
 export function mediaUrl(cid: string, photoId: string, kind: "p" | "t" = "p"): string {
   return `${MEDIA_PREFIX}/${kind}/${cid}/${photoId}`;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                          Indexing a photo's faces                          */
+/* -------------------------------------------------------------------------- */
+
+export const facesKey = (cid: string, photoId: string) => `meta/faces/${cid}/${photoId}`;
+
+/** Length of a face-api descriptor. A different length means a different model. */
+export const DESCRIPTOR_DIM = 128;
+
+/** Beyond this in one frame it is a crowd shot, and the tail is not worth storing. */
+export const MAX_FACES_PER_PHOTO = 64;
+
+export type IncomingFace = {
+  descriptor: number[];
+  box: { x: number; y: number; width: number; height: number };
+  score: number;
+};
+
+/**
+ * Records the faces found in one photo.
+ *
+ * Descriptors go to Vectorize, which is what makes a search over forty thousand
+ * photos a handful of lookups instead of a scan. The bounding boxes go to R2
+ * beside the photo, because they are only ever read for one photo at a time and
+ * putting them in the index would force every query down to a lower result
+ * ceiling to carry them.
+ *
+ * Detection runs in the browser, so what arrives here is untrusted: the
+ * dimension is checked, the count is capped, and anything malformed is refused
+ * rather than written.
+ */
+async function handleIndex(request: Request, env: MediaEnv): Promise<Response> {
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+  const userId = await currentUserId(request, env);
+  if (!userId) return json({ error: "Not signed in" }, 401);
+  const member = await getMemberById(env.PHOTOS, userId);
+  if (!member || member.role !== "admin") return json({ error: "Admins only" }, 403);
+
+  let body: { collection?: string; photoId?: string; faces?: IncomingFace[] };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Malformed body" }, 400);
+  }
+
+  const cid = body.collection ?? "";
+  const photoId = body.photoId ?? "";
+  if (!isSafeId(cid) || !isSafeId(photoId)) return json({ error: "Bad id" }, 400);
+
+  const faces = Array.isArray(body.faces) ? body.faces.slice(0, MAX_FACES_PER_PHOTO) : [];
+  for (const face of faces) {
+    if (!Array.isArray(face?.descriptor) || face.descriptor.length !== DESCRIPTOR_DIM) {
+      return json({ error: `Each descriptor must be ${DESCRIPTOR_DIM} numbers` }, 400);
+    }
+    if (face.descriptor.some((n) => typeof n !== "number" || !Number.isFinite(n))) {
+      return json({ error: "Descriptor contains a non-number" }, 400);
+    }
+  }
+
+  // Boxes first. If the index write fails the photo is still browsable, and a
+  // re-index can fill the gap; the reverse would leave searchable faces with no
+  // way to draw them.
+  await env.PHOTOS.put(
+    facesKey(cid, photoId),
+    JSON.stringify(faces.map((f) => ({ box: f.box, score: f.score }))),
+    { httpMetadata: { contentType: "application/json", cacheControl: "no-store" } },
+  );
+
+  let indexed = 0;
+  if (faces.length > 0) {
+    if (!env.FACE_INDEX) {
+      // Local development without Vectorize. Say so rather than pretend.
+      return json({ indexed: 0, faces: faces.length, warning: "no-face-index" }, 202);
+    }
+    const result = await indexPhotoFaces(env.FACE_INDEX, {
+      collectionId: cid,
+      photoId,
+      descriptors: faces.map((f) => f.descriptor),
+    });
+    indexed = result.indexed;
+  }
+
+  return json({ indexed, faces: faces.length }, 200);
 }

@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { GlassCard } from "@/components/ui-kit";
 import { formatCount } from "@/lib/images";
-import type { Progress } from "@/lib/pipeline";
+/** Anything that reports how far along it is. Uploads and scans both qualify. */
+export type ProgressLike = {
+  processed: number;
+  total: number;
+  faces: number;
+  failed: number;
+  /** Absent during an upload, where nothing is being matched yet. */
+  matches?: number;
+  current?: string;
+};
 
 function fmtTime(ms: number) {
   const s = Math.max(1, Math.round(ms / 1000));
@@ -19,7 +28,7 @@ export function ScanProgress({
   title = "Finding your photos",
   subtitle,
 }: {
-  progress: Progress;
+  progress: ProgressLike;
   title?: string;
   subtitle?: string;
 }) {
@@ -80,7 +89,7 @@ export function ScanProgress({
           <div className="mt-5 grid grid-cols-3 gap-3">
             <Stat label="Analysed" value={progress.processed} />
             <Stat label="Faces" value={progress.faces} />
-            <Stat label="Matches" value={progress.matches} />
+            <Stat label="Matches" value={progress.matches ?? 0} />
           </div>
 
           {progress.failed > 0 && (
