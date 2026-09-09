@@ -1,17 +1,21 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "vayam-gallery",
-  "compatibility_date": "2026-09-09",
+  "name": "vayamstudios-gallery",
+  "compatibility_date": "2026-09-10",
   "compatibility_flags": ["nodejs_compat"],
   "main": "@tanstack/react-start/server-entry",
   "observability": { "enabled": true },
 
   // The interface is served as static assets. Those are free and unlimited on
   // both the free and paid plans, so hosting the app itself costs nothing.
-  // Only requests that reach the Worker (photo bytes, scans, uploads) count.
+  // Only requests that reach the Worker count against the request quota.
+  //
+  // The paid plan is required regardless: the free plan allows ten
+  // milliseconds of CPU per request, and verifying a password alone takes
+  // eighty.
 
   // Photos, thumbnails and every record in the product. There is no separate
-  // database: see src/lib/storage.server.ts for why R2 alone is sufficient here.
+  // database; see src/lib/storage.server.ts for why R2 alone is sufficient.
   "r2_buckets": [
     {
       "binding": "PHOTOS",
@@ -19,18 +23,27 @@
     }
   ],
 
-  // The face pre-index. 128 dimensions matches the current face-api descriptor.
-  // Euclidean metric, so the browser and the index measure distance the same way
-  // and MATCH_MAX_DISTANCE means one thing everywhere.
+  // The face pre-index. 128 dimensions matches the current face-api
+  // descriptor. Euclidean metric, so the browser and the index measure
+  // distance the same way and MATCH_MAX_DISTANCE means one thing everywhere.
   //
   //   npx wrangler vectorize create vayam-faces --dimensions=128 --metric=euclidean
-  //
-  // Moving to ArcFace later means a new index at 512 dimensions and a re-index
-  // of existing collections. Nothing in the search code changes.
   "vectorize": [
     {
       "binding": "FACE_INDEX",
       "index_name": "vayam-faces"
     }
-  ]
+  ],
+
+  // Not secret. The public bucket is for assets that are safe without a
+  // session; photos are served through the Worker behind a session check.
+  "vars": {
+    "R2_PUBLIC_URL": "https://pub-caf4c5ddf0424d7a903e671fc2a45b86.r2.dev"
+  }
+
+  // Secrets are NOT listed here. Set them once per environment with:
+  //   npx wrangler secret put SESSION_SECRET
+  //   npx wrangler secret put ADMIN_EMAIL
+  //   npx wrangler secret put ADMIN_PASSWORD
+  // Locally they are read from .env, which is gitignored.
 }
