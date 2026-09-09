@@ -2,6 +2,7 @@ import "./lib/error-capture";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
+import { handleMediaRequest, type MediaEnv } from "./lib/media.server";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -47,6 +48,12 @@ function isH3SwallowedErrorBody(body: string): boolean {
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      // Image routes are handled here rather than in the app, because serving
+      // bytes wants a real Response and direct access to the R2 binding. A
+      // non-media path returns null and falls through untouched.
+      const media = await handleMediaRequest(request, env as MediaEnv);
+      if (media) return media;
+
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

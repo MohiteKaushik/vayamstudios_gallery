@@ -14,11 +14,12 @@
     "format": "prettier --write .",
     "test:index": "node --experimental-strip-types scripts/test-face-index.ts",
     "test:storage": "node --experimental-strip-types scripts/test-storage.ts",
-    "test": "npm run test:auth && npm run test:store && npm run test:search && npm run test:index && npm run test:storage && npm run test:members",
+    "test": "npm run test:auth && npm run test:store && npm run test:media && npm run test:search && npm run test:index && npm run test:storage && npm run test:members",
     "test:members": "node --experimental-strip-types scripts/test-members.ts",
     "test:search": "node --experimental-strip-types scripts/test-face-search.ts",
     "test:auth": "node --experimental-strip-types scripts/test-auth.ts",
-    "test:store": "node --experimental-strip-types scripts/test-members-store.ts"
+    "test:store": "node --experimental-strip-types scripts/test-members-store.ts",
+    "test:media": "node --experimental-strip-types scripts/test-media.ts"
   },
   "overrides": {
     "rolldown": "1.2.1"
