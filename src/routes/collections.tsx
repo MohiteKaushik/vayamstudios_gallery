@@ -7,6 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { ScanProgress } from "@/components/ScanProgress";
 import { PhotoGrid, PhotoGridSkeleton, type GridPhoto } from "@/components/PhotoGrid";
 import { PhotoViewer } from "@/components/PhotoViewer";
+import { FaceEnrolSheet } from "@/components/FaceEnrolSheet";
 import { EmptyState, GlassButton, GlassCard, Shimmer, useConfirm } from "@/components/ui-kit";
 import { useRequireAuth } from "@/lib/auth-gate";
 import { formatCount } from "@/lib/images";
@@ -394,6 +395,8 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
   // then choose to do, from the button in the corner, rather than a wall that
   // stands between a member and the photographs.
   const [view, setView] = useState<"all" | "mine">("all");
+  // Raised the first time someone presses Find me without a reference photo.
+  const [enrolling, setEnrolling] = useState(false);
 
   const allPhotos = useQuery({
     queryKey: ["photos", collectionId],
@@ -424,8 +427,12 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
         toast.info("No confident matches in this collection");
       }
     } catch (e) {
+      // No reference photo yet is not an error, it is the next step. Ask for
+      // one here rather than sending the member off to another tab to find a
+      // control they have never seen.
       if (e instanceof ApiError && e.code === "no-face") {
-        toast.error("Add a reference photo of yourself first, from the Home tab.");
+        setView("all");
+        setEnrolling(true);
       } else {
         toast.error(e instanceof Error ? e.message : "Scan failed");
       }
@@ -515,6 +522,16 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
 
       {open !== null && (
         <PhotoViewer photos={grid} index={open} onIndexChange={setOpen} onClose={() => setOpen(null)} />
+      )}
+
+      {enrolling && (
+        <FaceEnrolSheet
+          onClose={() => setEnrolling(false)}
+          onDone={() => {
+            setEnrolling(false);
+            void scan();
+          }}
+        />
       )}
     </>
   );

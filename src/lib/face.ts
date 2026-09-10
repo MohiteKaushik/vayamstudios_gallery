@@ -43,7 +43,13 @@ const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/mode
  * The nearest true match sat at 0.333. There is no gap between the two, only a
  * boundary, and 0.34 was where it fell.
  *
- * It is set to 0.10 at the studio’s instruction, well inside that boundary,
+ * It was set to 0.10 for a day, at the studio’s instruction, and that is left
+ * recorded here because the measurement is the useful part: at 0.10 nobody
+ * found anything, which is what the numbers below predicted and what happened.
+ * It is back at 0.34 while the descriptor itself is replaced, which is the only
+ * change that actually moves both precision and recall at once.
+ *
+ * The 0.10 measurement, well inside that boundary,
  * after wrong people were still getting through at 0.34. What 0.10 means on
  * these photographs, measured across the live collections by using every face
  * in turn as a reference:
@@ -68,7 +74,7 @@ const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/mode
  * note in face-index.server.ts for why the graph expansion cannot rescue that
  * either on photographs like these.
  */
-export const MATCH_MAX_DISTANCE = 0.10;
+export const MATCH_MAX_DISTANCE = 0.34;
 
 /**
  * Long edge each detection pass sees.

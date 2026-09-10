@@ -1,17 +1,15 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Layers, ScanFace, UserRound } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { Layers, UserRound } from "lucide-react";
+import { useEffect } from "react";
 import { AppShell } from "@/components/AppShell";
 import { MembersPanel } from "@/components/MembersPanel";
 import { EventShowcase } from "@/components/EventShowcase";
-import { EmptyState, GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
+import { GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
 import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/auth-gate";
 import { loadEngine } from "@/lib/face";
 import { formatCount } from "@/lib/images";
-import { enrolFace } from "@/lib/enroll";
 import { useIsAdmin } from "@/lib/roles";
 
 export const Route = createFileRoute("/home")({
@@ -119,67 +117,23 @@ function Home({ userId }: { userId: string }) {
     );
   }
 
+  // A member lands on the event, whether or not they have given us a face.
+  //
+  // This used to open on "Add a reference photo of yourself", and nothing else
+  // was reachable until they did. Most people arriving from an event want to
+  // look at the photographs first and find themselves afterwards, and a page
+  // that demands a selfie before it has shown you anything is a page people
+  // close. The ask now happens the first time they press Find me, where the
+  // reason for it is obvious, and Settings can change it afterwards.
   return (
     <AppShell>
-      {!profile.data ? (
-        <FaceSetup userId={userId} onDone={() => qc.invalidateQueries({ queryKey: ["face-profile", userId] })} />
-      ) : (
-        <>
-          <FaceCard />
-          {collectionList}
-        </>
-      )}
-      {/* Past work, shown whether or not the face profile exists yet, so a
-          member who has just signed up is not left staring at one upload prompt. */}
+      <FaceCard />
+      {collectionList}
       <EventShowcase />
     </AppShell>
   );
 }
 
-
-function FaceSetup({ userId, onDone }: { userId: string; onDone: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  async function pick(file: File | undefined) {
-    if (!file) return;
-    setBusy(true);
-    try {
-      const { error } = await enrolFace(file);
-      if (error) toast.error(error);
-      else {
-        toast.success("Face profile saved");
-        onDone();
-      }
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Something went wrong");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <EmptyState
-      icon={<ScanFace className="size-7" strokeWidth={1.5} />}
-      title="Add a reference photo of yourself"
-      description="A clear, front-facing photo works best. It's analysed on your device and used only to recognise you."
-      action={
-        <>
-          <input
-            ref={inputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => pick(e.target.files?.[0])}
-          />
-          <GlassButton size="lg" loading={busy} icon={<UserRound className="size-4" />} onClick={() => inputRef.current?.click()}>
-            {busy ? "Analysing…" : "Choose photo"}
-          </GlassButton>
-        </>
-      }
-    />
-  );
-}
 
 function FaceCard() {
   return (
@@ -189,9 +143,9 @@ function FaceCard() {
           <UserRound className="size-6 text-muted-foreground" strokeWidth={1.5} />
         </div>
         <div>
-          <h1 className="text-2xl font-semibold tracking-[-0.03em]">Find yourself</h1>
+          <h1 className="text-2xl font-semibold tracking-[-0.03em]">The photographs</h1>
           <p className="text-sm text-muted-foreground">
-            Open the live event and we'll pull out the photos you appear in.
+            Open the event to see everything, then press Find me for your own.
           </p>
         </div>
       </div>
