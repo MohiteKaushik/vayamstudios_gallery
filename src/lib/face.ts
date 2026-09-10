@@ -31,16 +31,29 @@ import { downscale, mirror } from "./images.ts";
 const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model";
 
 /**
- * Euclidean distance threshold. Tuned down from the library default (0.6) to
- * cut false positives: only clearly-the-same-person faces pass.
+ * Euclidean distance threshold: how close a face must be to a member's own
+ * reference before it is called the same person.
  *
- * This alone cannot reach a turned head. A profile sits around 0.8 from a
- * frontal selfie, and widening the threshold that far lets in strangers long
- * before it lets in the profile. Angles are handled by matching against several
- * reference embeddings and by the graph expansion in face-index.server.ts,
- * not by loosening this number.
+ * Set from the photographs rather than from the library default of 0.6, by
+ * pulling every descriptor out of the live collections, taking the face that
+ * attracted the most others, and looking at the crops it returned in distance
+ * order. In a collection of guests at one event, the first genuine stranger
+ * appeared at 0.349 and several more by 0.36, all of them large, sharply
+ * focused faces rather than distant ones that a size filter would have caught.
+ * The nearest true match sat at 0.333. There is no gap between the two, only a
+ * boundary, and 0.34 is where it falls.
+ *
+ * The consequence is deliberate and worth stating plainly: this is tight enough
+ * that a member photographed from an unusual angle will be missed. That was the
+ * instruction. Guests being shown photographs of other people is the failure
+ * that matters, and at 0.46 it happened on every scan.
+ *
+ * It follows that this alone cannot reach a turned head, and neither can
+ * widening it, because strangers arrive long before the profile does. See the
+ * note in face-index.server.ts for why the graph expansion cannot rescue that
+ * either on photographs like these.
  */
-export const MATCH_MAX_DISTANCE = 0.46;
+export const MATCH_MAX_DISTANCE = 0.34;
 
 /**
  * Long edge each detection pass sees.

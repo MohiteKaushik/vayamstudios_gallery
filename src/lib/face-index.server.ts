@@ -97,15 +97,21 @@ export const LINK_MAX_DISTANCE = 0.34;
 export const MIN_SUPPORT = 3;
 
 /**
- * Expansion rounds after the seed round.
+ * Expansion rounds after the seed round. Zero: the walk is off.
  *
- * The simulation saturated at four. Two things cut it to one. Against the live
- * service a scan was issuing roughly 640 queries, taking 44 seconds and pushing
- * Vectorize into 500s, and each round multiplies the query count by the frontier
- * size. Then the distance measurements showed that additional rounds were not
- * reaching further into the same person, they were reaching into other people.
+ * It went from four to one when a scan was issuing 640 queries and taking 44
+ * seconds, and from one to none when the crops were finally looked at. Every
+ * hop the walk can safely take now lands inside the direct threshold and finds
+ * nothing new, and every hop that would find something new crosses into other
+ * people. On these photographs a stranger sits 0.35 from a member while a
+ * turned-away shot of the member himself sits past 0.6, so the walk has no
+ * distance left to work in.
+ *
+ * The code is kept, and takes a rounds argument, because it is correct and
+ * because a stronger embedding would give it room. It is the 128-dimension
+ * descriptor that is the limit here, not the algorithm around it.
  */
-export const DEFAULT_ROUNDS = 1;
+export const DEFAULT_ROUNDS = 0;
 
 /**
  * Probes carried into the expansion round, closest first.

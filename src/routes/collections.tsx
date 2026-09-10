@@ -20,10 +20,10 @@ export const Route = createFileRoute("/collections")({
   }),
   head: () => ({
     meta: [
-      { title: "Collections — VAYAM Designers Gallery" },
-      { name: "description", content: "Browse shared photo collections and find yourself in them." },
-      { property: "og:title", content: "Collections — VAYAM Designers Gallery" },
-      { property: "og:description", content: "Browse shared photo collections and find yourself in them." },
+      { title: "Live Event — VAYAM Designers Gallery" },
+      { name: "description", content: "Find yourself in the photographs from the event." },
+      { property: "og:title", content: "Live Event — VAYAM Designers Gallery" },
+      { property: "og:description", content: "Find yourself in the photographs from the event." },
     ],
   }),
   component: CollectionsPage,
@@ -77,7 +77,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
           onClick={() => navigate({ to: ".", search: { shared: undefined } })}
           className="press mb-5 inline-flex items-center gap-1 rounded-full text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <ChevronLeft className="size-4" /> Collections
+          <ChevronLeft className="size-4" /> Live Event
         </button>
         {isAdmin ? (
           <AdminCollection collectionId={shared} name={current?.name ?? "Collection"} />
@@ -93,11 +93,11 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <AppShell>
-      <h1 className="text-3xl font-semibold tracking-[-0.03em]">Collections</h1>
+      <h1 className="text-3xl font-semibold tracking-[-0.03em]">Live Event</h1>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
         {isAdmin
-          ? "Create a collection, then add the photos to it. Every face is indexed once so members can find themselves."
-          : "Open a collection and tap Find me — only the photos that match your reference face appear."}
+          ? "Create an event, then add the photos to it. Every face is indexed once so members can find themselves."
+          : "Open an event and tap Find me — only the photos that match your reference face appear."}
       </p>
 
       {isAdmin && (
@@ -129,7 +129,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
               loading={create.isPending}
               disabled={!name.trim()}
             >
-              New collection
+              New event
             </GlassButton>
           </div>
         </form>
@@ -142,9 +142,9 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
           <EmptyState
             tone="error"
             icon={<Layers className="size-7" strokeWidth={1.5} />}
-            title="Collections unavailable"
+            title="No events available"
             description={
-              collections.error instanceof Error ? collections.error.message : "Could not load collections."
+              collections.error instanceof Error ? collections.error.message : "Could not load the events."
             }
           />
         ) : collections.data?.length ? (
@@ -201,11 +201,11 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
         ) : (
           <EmptyState
             icon={<Layers className="size-7" strokeWidth={1.5} />}
-            title="No collections yet"
+            title="No events yet"
             description={
               isAdmin
                 ? "Create one above, then add the photos to it."
-                : "Nothing has been published yet. New collections will show up here."
+                : "Nothing has been published yet. New events will show up here."
             }
           />
         )}
@@ -385,18 +385,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
 function MemberCollection({ collectionId, name }: { collectionId: string; name: string }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState<number | null>(null);
-  const [showPossible, setShowPossible] = useState(false);
   const [scanning, setScanning] = useState(false);
-  // Members asked to see the whole collection, not only their own matches.
-  // Fetched lazily, because for most people the matches are the point.
-  const [browseAll, setBrowseAll] = useState(false);
-
-  const allPhotos = useQuery({
-    queryKey: ["photos", collectionId],
-    queryFn: () => api.allPhotos(collectionId),
-    enabled: browseAll,
-    retry: false,
-  });
 
   const results = useQuery({
     queryKey: ["scan", collectionId],
@@ -415,10 +404,7 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
       if (r.hits.length === 0 && r.state && r.state !== "no-match") {
         toast.info(explainEmpty(r));
       } else if (r.hits.length) {
-        toast.success(
-          `Found you in ${formatCount(r.hits.length, "photo")}` +
-            (r.possible.length ? `, plus ${r.possible.length} to check` : ""),
-        );
+        toast.success(`Found you in ${formatCount(r.hits.length, "photo")}`);
       } else {
         toast.info("No confident matches in this collection");
       }
@@ -433,42 +419,15 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
     }
   }
 
-  if (browseAll) {
-    const everything: GridPhoto[] = (allPhotos.data ?? []).map(toGridPhoto);
-    return (
-      <>
-        <button
-          onClick={() => setBrowseAll(false)}
-          className="press mb-5 inline-flex items-center gap-1 rounded-full text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <ChevronLeft className="size-4" /> Back to your photos
-        </button>
-        <h1 className="text-3xl font-semibold tracking-[-0.03em]">{name}</h1>
-        <p className="mb-6 mt-1 text-sm text-muted-foreground">
-          Every photo in this collection, {formatCount(everything.length, "photo")}
-        </p>
-        {allPhotos.isLoading ? (
-          <PhotoGridSkeleton />
-        ) : everything.length === 0 ? (
-          <EmptyState
-            icon={<Layers className="size-7" strokeWidth={1.5} />}
-            title="Nothing here yet"
-            description="This collection has no photos in it."
-          />
-        ) : (
-          <PhotoGrid photos={everything} onOpen={setOpen} />
-        )}
-        {open !== null && (
-          <PhotoViewer photos={everything} index={open} onIndexChange={setOpen} onClose={() => setOpen(null)} />
-        )}
-      </>
-    );
-  }
-
-  const hits = results.data?.hits ?? [];
-  const possible = results.data?.possible ?? [];
-  const shown: ScanHit[] = showPossible ? [...hits, ...possible] : hits;
-  const grid: GridPhoto[] = shown.map(toGridHit);
+  // A member sees the photographs they are in and nothing else.
+  //
+  // There was a "browse all" view here, added when matching was missing people
+  // and they needed a way through to the rest. It is gone at the studio's
+  // request: the event is other guests' photographs too, and a member scrolling
+  // all of them is not what was wanted. The matching threshold is now tight
+  // enough that what does come back is theirs.
+  const hits: ScanHit[] = results.data?.hits ?? [];
+  const grid: GridPhoto[] = hits.map(toGridHit);
   const hasScanned = (results.data?.scannedAt ?? 0) > 0;
 
   return (
@@ -480,14 +439,9 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
             {hasScanned ? `${formatCount(hits.length, "photo")} of you` : "Not scanned yet"}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <GlassButton variant="quiet" icon={<Layers className="size-4" />} onClick={() => setBrowseAll(true)}>
-            Browse all
-          </GlassButton>
-          <GlassButton icon={<ScanFace className="size-4" />} loading={scanning} onClick={scan}>
-            {hasScanned ? "Scan again" : "Find me"}
-          </GlassButton>
-        </div>
+        <GlassButton icon={<ScanFace className="size-4" />} loading={scanning} onClick={scan}>
+          {hasScanned ? "Scan again" : "Find me"}
+        </GlassButton>
       </div>
 
       {scanning && (
@@ -508,33 +462,14 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
           title="Find yourself in this collection"
           description="We compare against your reference face on your device. Only the photos you appear in are shown."
         />
-      ) : hits.length === 0 && possible.length === 0 ? (
+      ) : hits.length === 0 ? (
         <EmptyState
           icon={<ScanFace className="size-7" strokeWidth={1.5} />}
           title={emptyTitle(results.data)}
           description={results.data ? explainEmpty(results.data) : ""}
-          action={
-            <GlassButton variant="quiet" icon={<Layers className="size-4" />} onClick={() => setBrowseAll(true)}>
-              Browse all photos
-            </GlassButton>
-          }
         />
       ) : (
-        <>
-          {possible.length > 0 && (
-            <button
-              onClick={() => setShowPossible((v) => !v)}
-              className="press mb-4 inline-flex items-center gap-2 rounded-full border border-hairline px-4 py-2 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {showPossible ? "Hide" : "Show"} {possible.length} possible match
-              {possible.length === 1 ? "" : "es"}
-              <span className="text-xs">
-                {showPossible ? "" : "· less certain, worth a look"}
-              </span>
-            </button>
-          )}
-          <PhotoGrid photos={grid} onOpen={setOpen} showConfidence />
-        </>
+        <PhotoGrid photos={grid} onOpen={setOpen} showConfidence />
       )}
 
       {open !== null && (

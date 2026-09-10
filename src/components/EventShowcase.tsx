@@ -35,8 +35,14 @@ export function EventShowcase() {
       </p>
 
       <ul className="space-y-2">
-        {events.map((event, i) => {
+        {/* Newest first. The studio's own list runs oldest to newest, and that
+            order is kept in vayam.ts because it is theirs; it is only reversed
+            for display, so the most recent work is what a visitor reads first.
+            The number stays with the event rather than with the row, so an
+            event does not change its number when another is added. */}
+        {[...events].reverse().map((event, i) => {
           const place = eventSubtitle(event);
+          const number = events.length - i;
           return (
             <li key={`${event.name}-${event.year ?? ""}-${place ?? ""}`}>
               <GlassCard
@@ -53,7 +59,7 @@ export function EventShowcase() {
                 className="flex items-center gap-4 px-5 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span className="w-6 shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
-                  {String(i + 1).padStart(2, "0")}
+                  {String(number).padStart(2, "0")}
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium tracking-[-0.01em]">
@@ -87,7 +93,9 @@ function EventDetail({ event, onBack }: { event: VayamEvent; onBack: () => void 
       {place && <p className="mt-1 text-sm text-muted-foreground">{place}</p>}
 
       <p className="mt-4 max-w-prose text-sm leading-relaxed text-muted-foreground">
-        Run end to end by VAYAM Designers. If you are planning something similar, the
+        Run end to end by VAYAM Designers{place ? ` in ${place}` : ""}
+        {event.year ? `, ${event.year}` : ""}. Planning, staging, branding and the
+        photography on the day. If you are putting together something similar, the
         team can talk you through how this one came together.
       </p>
 

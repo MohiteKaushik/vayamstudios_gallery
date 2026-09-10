@@ -87,6 +87,8 @@ export type ScanRecord = {
   possible: ScanHit[];
   scannedAt: number;
   facesSearched: number;
+  /** Which matching settings produced this. Absent means older than the first version. */
+  matcher?: number;
   /** Where the scan spent its time, in milliseconds. Absent on records written before this was measured. */
   timing?: { searchMs: number; readMs: number; statusMs: number; totalMs: number };
   /**
@@ -113,6 +115,24 @@ export type ScanRecord = {
 
 const collectionKey = (cid: string) => `meta/collection/${cid}`;
 const scanKey = (userId: string, cid: string) => `scan/${userId}/${cid}`;
+
+/**
+ * Which matching settings produced a stored scan.
+ *
+ * A scan is cached so that reopening an event does not re-run the search, and
+ * that cache outlives a deploy. When the thresholds change, every stored scan
+ * becomes a set of answers from the old settings, and a member who had already
+ * looked would keep seeing them: after a tightening, that means still being
+ * shown the strangers the tightening was meant to remove.
+ *
+ * Bump this whenever a change alters which photographs come back. Older records
+ * are then ignored and the next open re-runs the search. Nothing is deleted, so
+ * a record written by a newer version is left alone by an older one.
+ *
+ *   1  threshold 0.46, graph expansion on
+ *   2  threshold 0.34, expansion off, no marginal tier
+ */
+const MATCHER_VERSION = 2;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -164,10 +184,17 @@ const READ_CONCURRENCY = 50;
  * like. Past the threshold it falls away through the region where a match is
  * possible but wants a human glance, and reaches zero where a stranger sits.
  */
-export const CERTAIN_DISTANCE = 0.30;
+export const CERTAIN_DISTANCE = 0.24;
 const STRANGER_DISTANCE = 0.95;
 
-/** Below this, a result is offered as "possible" rather than asserted. */
+/**
+ * Below this a result would be offered as "possible" rather than asserted.
+ *
+ * Nothing reaches it any more. The match threshold is tight enough that every
+ * result is a direct match the model has no real doubt about, and the walk that
+ * used to produce weaker multi-hop results is off. The constant stays because
+ * the tiering is still correct if either of those changes back.
+ */
 export const CONFIDENT_THRESHOLD = 0.75;
 
 /**
@@ -295,7 +322,8 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
     const cid = rest[0] ?? "";
     if (request.method === "GET" && isSafeId(cid)) {
       const cached = await readJson<ScanRecord>(env.PHOTOS, scanKey(userId, cid));
-      return json(cached ?? { hits: [], possible: [], scannedAt: 0, facesSearched: 0 });
+      const current = cached?.matcher === MATCHER_VERSION ? cached : null;
+      return json(current ?? { hits: [], possible: [], scannedAt: 0, facesSearched: 0 });
     }
   }
 
@@ -969,16 +997,22 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
       `[scan] ${orphaned} match(es) in ${cid} had no photo record and were dropped`,
     );
   }
-  const hits: ScanHit[] = [];
+  // A member is shown matches and nothing else.
+  //
+  // There used to be a second tier of near-misses behind a "show possible
+  // matches" control, on the reasoning that a person would rather glance than
+  // be told no. On these photographs that tier was where the strangers were,
+  // and being shown a stranger reads as the system being broken rather than as
+  // an invitation to judge. Anything that does not clear the threshold is now
+  // simply not a match.
+  const hits: ScanHit[] = all.filter((h) => h.confidence >= CONFIDENT_THRESHOLD);
   const possible: ScanHit[] = [];
-  for (const hit of all) {
-    // Everything here is a real match. The split is about how sure we are, so
-    // a member can see the marginal ones rather than have them silently
-    // dropped, which is what was asked for.
-    (hit.confidence >= CONFIDENT_THRESHOLD ? hits : possible).push(hit);
-  }
   hits.sort((a, b) => b.confidence - a.confidence);
-  possible.sort((a, b) => b.confidence - a.confidence);
+
+  const belowBar = all.length - hits.length;
+  if (belowBar > 0) {
+    console.log(`[scan] ${belowBar} match(es) in ${cid} fell below the confidence bar and were not shown`);
+  }
 
   // "The search found nothing" has several causes and they need different
   // answers. Guessing from photo count alone produced a "still indexing"
@@ -1013,6 +1047,7 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
     hits,
     possible,
     scannedAt: Date.now(),
+    matcher: MATCHER_VERSION,
     facesSearched: outcome.stats.seedFaces + outcome.stats.linkedFaces,
     state,
     ...(status ? { index: status } : {}),

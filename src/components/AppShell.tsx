@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 const nav = [
   { to: "/home", label: "Home", icon: House },
   { to: "/photos", label: "Photos", icon: Images },
-  { to: "/collections", label: "Collections", icon: Layers },
+  { to: "/collections", label: "Live Event", icon: Layers },
   { to: "/settings", label: "Settings", icon: Settings2 },
 ] as const;
 

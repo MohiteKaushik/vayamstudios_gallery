@@ -18,9 +18,9 @@ export const Route = createFileRoute("/home")({
   head: () => ({
     meta: [
       { title: "Home — VAYAM Designers Gallery" },
-      { name: "description", content: "Set up your face profile, then find yourself in shared collections." },
+      { name: "description", content: "Set up your face profile, then find yourself in the event photographs." },
       { property: "og:title", content: "Home — VAYAM Designers Gallery" },
-      { property: "og:description", content: "Set up your face profile, then find yourself in shared collections." },
+      { property: "og:description", content: "Set up your face profile, then find yourself in the event photographs." },
     ],
   }),
   component: HomePage,
@@ -64,7 +64,7 @@ function Home({ userId }: { userId: string }) {
   const collectionList = (
     <section className="mt-12">
       <h2 className="mb-4 text-sm font-medium uppercase tracking-[0.12em] text-muted-foreground">
-        {admin ? "Your collections" : "Collections to scan"}
+        {admin ? "Your events" : "Live Event"}
       </h2>
       {sharedCollections.isLoading ? (
         <Shimmer className="h-16" />
@@ -92,8 +92,8 @@ function Home({ userId }: { userId: string }) {
       ) : (
         <p className="text-sm text-muted-foreground">
           {admin
-            ? "No collections yet. Create one from the Collections tab and upload photos into it."
-            : "Nothing has been published yet. New collections will show up here."}
+            ? "No events yet. Create one from the Live Event tab and upload photos into it."
+            : "Nothing has been published yet. New events will show up here."}
         </p>
       )}
     </section>
@@ -103,13 +103,13 @@ function Home({ userId }: { userId: string }) {
     return (
       <AppShell>
         <section className="rise-in">
-          <h1 className="text-3xl font-semibold tracking-[-0.03em]">Collections</h1>
+          <h1 className="text-3xl font-semibold tracking-[-0.03em]">Live Event</h1>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-            Create a collection, then upload the photos. Members see only the frames they appear in.
+            Create an event, then upload the photos. Members see only the frames they appear in.
           </p>
           <Link to="/collections" search={{ shared: undefined }} className="mt-8 inline-flex">
             <GlassButton size="lg" icon={<Layers className="size-4" />}>
-              Open collections
+              Open live event
             </GlassButton>
           </Link>
         </section>
@@ -191,7 +191,7 @@ function FaceCard() {
         <div>
           <h1 className="text-2xl font-semibold tracking-[-0.03em]">Find yourself</h1>
           <p className="text-sm text-muted-foreground">
-            Open a published collection and we'll pull out the photos you appear in.
+            Open the live event and we'll pull out the photos you appear in.
           </p>
         </div>
       </div>
@@ -199,7 +199,7 @@ function FaceCard() {
       <Link to="/collections" search={{ shared: undefined }}>
         <GlassCard interactive className="flex flex-col items-center px-6 py-14 text-center">
           <Layers className="mb-5 size-8 text-muted-foreground" strokeWidth={1.4} />
-          <p className="text-lg font-medium tracking-[-0.02em]">Browse collections</p>
+          <p className="text-lg font-medium tracking-[-0.02em]">Open live event</p>
           <p className="mt-1 text-sm text-muted-foreground">Photos are published by the organisers</p>
         </GlassCard>
       </Link>

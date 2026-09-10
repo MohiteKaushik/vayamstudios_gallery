@@ -46,6 +46,8 @@ export type ScanResult = {
   /** Real matches the system is less sure about, offered rather than hidden. */
   possible: ScanHit[];
   scannedAt: number;
+  /** Which matching settings produced this result. */
+  matcher?: number;
   /** Where a scan spent its time, in milliseconds. Absent on older records. */
   timing?: { searchMs: number; readMs: number; statusMs: number; totalMs: number };
   facesSearched: number;
