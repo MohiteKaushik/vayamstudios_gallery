@@ -13,12 +13,12 @@ export function Logo({ className }: { className?: string }) {
       <img
         src="/vayam-logo-black.png"
         alt="VAYAM Designers"
-        className="h-full w-auto object-contain dark:hidden"
+        className="h-8 w-auto object-contain dark:hidden"
       />
       <img
         src="/vayam-logo-white.png"
         alt="VAYAM Designers"
-        className="hidden h-full w-auto object-contain dark:block"
+        className="hidden h-8 w-auto object-contain dark:block"
       />
     </span>
   );
