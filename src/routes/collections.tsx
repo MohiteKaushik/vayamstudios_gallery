@@ -399,12 +399,19 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
     try {
       const r = await api.scan(collectionId);
       qc.setQueryData(["scan", collectionId], r);
-      toast.success(
-        r.hits.length
-          ? `Found you in ${formatCount(r.hits.length, "photo")}` +
-              (r.possible.length ? `, plus ${r.possible.length} to check` : "")
-          : "No confident matches in this collection",
-      );
+      // A lagging index is not the same as no matches, and telling someone
+      // they are not in the photos when the index simply has not caught up
+      // sends them away for good.
+      if (r.indexLagging) {
+        toast.info("These photos are still being indexed. Try again in a minute.");
+      } else if (r.hits.length) {
+        toast.success(
+          `Found you in ${formatCount(r.hits.length, "photo")}` +
+            (r.possible.length ? `, plus ${r.possible.length} to check` : ""),
+        );
+      } else {
+        toast.info("No confident matches in this collection");
+      }
     } catch (e) {
       if (e instanceof ApiError && e.code === "no-face") {
         toast.error("Add a reference photo of yourself first, from the Home tab.");
@@ -457,8 +464,12 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
       ) : hits.length === 0 && possible.length === 0 ? (
         <EmptyState
           icon={<ScanFace className="size-7" strokeWidth={1.5} />}
-          title="No matches here"
-          description="You do not appear in this collection, or the photos of you are too small or turned too far away to recognise."
+          title={results.data?.indexLagging ? "Still indexing" : "No matches here"}
+          description={
+            results.data?.indexLagging
+              ? "These photos were added recently and are still being prepared for search. Try again in a minute."
+              : "You do not appear in this collection, or the photos of you are too small or turned too far away to recognise."
+          }
         />
       ) : (
         <>

@@ -6,7 +6,6 @@
  * storage key is built.
  */
 
-import { ensureUploadSession } from "./upload";
 import type { MemberRow } from "./members";
 
 export type Collection = {
@@ -48,6 +47,10 @@ export type ScanResult = {
   possible: ScanHit[];
   scannedAt: number;
   facesSearched: number;
+  /** Matches that could not be shown because their photo record was missing. */
+  orphaned?: number;
+  /** The index has not caught up with this collection yet. Try again shortly. */
+  indexLagging?: boolean;
 };
 
 export class ApiError extends Error {
@@ -62,11 +65,6 @@ export class ApiError extends Error {
 }
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
-  // The Worker only knows callers by their session cookie, and sign-in still
-  // runs through the old service. This makes sure the cookie exists before the
-  // first call; it is a no-op afterwards.
-  await ensureUploadSession();
-
   const res = await fetch(path, {
     credentials: "same-origin",
     ...init,
@@ -136,6 +134,9 @@ export const api = {
     }),
 
   cachedScan: (collectionId: string) => call<ScanResult>(`/api/scan/${collectionId}`),
+
+  forgetFace: () =>
+    call<{ ok: true; clearedScans: number }>("/api/face-profile", { method: "DELETE" }),
 
   /** Deletes named photos, or the whole collection when none are named. */
   deletePhotos: (collectionId: string, photos?: string[]) =>

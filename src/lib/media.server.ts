@@ -27,19 +27,8 @@
  * gallery re-reads nothing and re-downloads nothing.
  */
 
-import {
-  verifySessionToken,
-  readCookie,
-  createSessionToken,
-  sessionCookieHeader,
-  isSecureRequest,
-} from "./auth/session.ts";
-import {
-  getMemberById,
-  getMemberByEmail,
-  createMember,
-  ensureRole,
-} from "./auth/members.server.ts";
+import { verifySessionToken, readCookie } from "./auth/session.ts";
+import { getMemberById } from "./auth/members.server.ts";
 import { indexPhotoFaces, removePhotoFaces, type VectorizeIndex } from "./face-index.server.ts";
 import type { R2Bucket } from "./storage.server.ts";
 
@@ -54,9 +43,8 @@ export type MediaEnv = {
   FACE_INDEX?: VectorizeIndex;
   /** Which address gets the operator role. */
   ADMIN_EMAIL?: string;
-  /** Only used by the session bridge, and only until sign-in moves across. */
-  SUPABASE_URL?: string;
-  SUPABASE_PUBLISHABLE_KEY?: string;
+  /** Operator password, used once to create the console account on first run. */
+  ADMIN_PASSWORD?: string;
 };
 
 /** Prefix every image route sits under. */
@@ -152,7 +140,6 @@ export async function handleMediaRequest(
   const segments = url.pathname.slice(MEDIA_PREFIX.length + 1).split("/");
   const [kind, ...rest] = segments;
 
-  if (kind === "session") return handleSessionExchange(request, env);
   if (kind === "upload") return handleUpload(request, env, url);
   if (kind === "index") return handleIndex(request, env);
   if (kind === "delete") return handleDelete(request, env);
@@ -244,99 +231,6 @@ async function handleUpload(request: Request, env: MediaEnv, url: URL): Promise<
 /** The path a browser should request for a stored image. */
 export function mediaUrl(cid: string, photoId: string, kind: "p" | "t" = "p"): string {
   return `${MEDIA_PREFIX}/${kind}/${cid}/${photoId}`;
-}
-
-/* -------------------------------------------------------------------------- */
-/*                        Bridging the old session                            */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Exchanges the sign-in the app currently uses for a session this Worker
- * accepts, and creates the member's R2 record on the way through.
- *
- * This exists because the migration is mid-flight. Sign-in still runs through
- * the old service while storage and search have already moved, so without this
- * every upload is refused by a Worker that has never seen the caller. Called
- * once per batch: after it, the cookie carries the session and nothing else
- * touches the old service, so a forty thousand photo upload does not make forty
- * thousand round trips to verify a token.
- *
- * It goes away when sign-in itself moves across. Until then it is the only
- * thing in the media path that still knows the old service exists.
- */
-async function handleSessionExchange(request: Request, env: MediaEnv): Promise<Response> {
-  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-  if (!env.SESSION_SECRET) return json({ error: "SESSION_SECRET is not configured" }, 500);
-
-  const auth = request.headers.get("authorization") ?? "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (!token) return json({ error: "No token supplied" }, 401);
-
-  const identity = await verifyLegacyToken(token, env);
-  if (!identity) return json({ error: "That sign-in is not valid" }, 401);
-
-  const member = await findOrCreateBridgedMember(env, identity.email);
-  if (!member) return json({ error: "Could not prepare your account" }, 500);
-
-  const sessionToken = await createSessionToken(member.id, env.SESSION_SECRET);
-  return new Response(
-    JSON.stringify({ id: member.id, email: member.email, role: member.role }),
-    {
-      status: 200,
-      headers: {
-        "content-type": "application/json",
-        "cache-control": "no-store",
-        "set-cookie": sessionCookieHeader(sessionToken, { secure: isSecureRequest(request) }),
-      },
-    },
-  );
-}
-
-/** Asks the old service who a token belongs to. One call, once per batch. */
-async function verifyLegacyToken(
-  token: string,
-  env: MediaEnv,
-): Promise<{ email: string } | null> {
-  const base = env.SUPABASE_URL;
-  const key = env.SUPABASE_PUBLISHABLE_KEY;
-  if (!base || !key) return null;
-
-  try {
-    const res = await fetch(`${base}/auth/v1/user`, {
-      headers: { Authorization: `Bearer ${token}`, apikey: key },
-    });
-    if (!res.ok) return null;
-    const user = (await res.json()) as { email?: string };
-    return user.email ? { email: user.email } : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Finds the member's R2 record, creating it the first time they arrive.
- *
- * The password is random and unusable on purpose: these accounts authenticate
- * through the old service, and inventing a guessable one would leave a way in
- * that nobody chose. Members set a real password when sign-in moves across.
- */
-async function findOrCreateBridgedMember(env: MediaEnv, email: string) {
-  const existing = await getMemberByEmail(env.PHOTOS, email);
-  if (existing) return ensureRole(env.PHOTOS, existing, env.ADMIN_EMAIL);
-
-  const unusable = crypto.randomUUID() + crypto.randomUUID();
-  const created = await createMember(env.PHOTOS, {
-    email,
-    password: unusable,
-    fullName: "",
-    phone: "",
-  });
-  if (!created.ok) {
-    // Lost a race with another tab doing the same thing. Whoever won is fine.
-    const now = await getMemberByEmail(env.PHOTOS, email);
-    return now ? ensureRole(env.PHOTOS, now, env.ADMIN_EMAIL) : null;
-  }
-  return ensureRole(env.PHOTOS, created.member, env.ADMIN_EMAIL);
 }
 
 /* -------------------------------------------------------------------------- */

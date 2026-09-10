@@ -4,8 +4,9 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { GlassButton, GlassCard } from "@/components/ui-kit";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/auth-gate";
+import { useSession } from "@/lib/session";
 import { useTheme, type ThemePref } from "@/lib/theme";
 
 export const Route = createFileRoute("/settings")({
@@ -28,38 +29,39 @@ function SettingsPage() {
 
 function Settings({ userId, email }: { userId: string; email: string }) {
   const { theme, setTheme } = useTheme();
+  const { signOut: endSession } = useSession();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
 
   async function resetFace() {
     setBusy("face");
-    const { data } = await supabase.from("face_profiles").select("image_path").eq("user_id", userId);
-    if (data?.length) await supabase.storage.from("photos").remove(data.map((d) => d.image_path));
-    await supabase.from("face_profiles").delete().eq("user_id", userId);
-    qc.invalidateQueries({ queryKey: ["face-profile", userId] });
-    setBusy(null);
-    toast.success("Face profile removed");
-    navigate({ to: "/home" });
+    try {
+      const r = await api.forgetFace();
+      qc.invalidateQueries();
+      toast.success(
+        r.clearedScans > 0
+          ? `Face profile removed, and ${r.clearedScans} past scan(s) cleared`
+          : "Face profile removed",
+      );
+      navigate({ to: "/home" });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not remove your face profile");
+    } finally {
+      setBusy(null);
+    }
   }
 
+  // Members do not own photos; collections belong to the studio. Clearing a
+  // members own data means clearing their face and their scan results, which
+  // resetFace already does completely.
   async function deleteAll() {
-    if (!confirm("Delete every uploaded photo and search? This cannot be undone.")) return;
-    setBusy("all");
-    const { data } = await supabase.from("photos").select("storage_path").eq("user_id", userId);
-    const paths = (data ?? []).map((p) => p.storage_path);
-    for (let i = 0; i < paths.length; i += 100) {
-      await supabase.storage.from("photos").remove(paths.slice(i, i + 100));
-    }
-    await supabase.from("search_sessions").delete().eq("user_id", userId);
-    await supabase.from("collections").delete().eq("user_id", userId);
-    qc.invalidateQueries();
-    setBusy(null);
-    toast.success("All photos deleted");
+    if (!confirm("Remove your face profile and every saved result? This cannot be undone.")) return;
+    await resetFace();
   }
 
   async function signOut() {
-    await supabase.auth.signOut();
+    await endSession();
     navigate({ to: "/" });
   }
 

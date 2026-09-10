@@ -1,11 +1,8 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
 import { Aperture, ShieldCheck } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
 import { useSession } from "@/lib/session";
-import { checkAdminCredentials, claimAdminRole } from "@/lib/admin.functions";
 import { FieldError, GlassButton, GlassCard } from "@/components/ui-kit";
 import { normalisePhone, validateSignUp, type FieldErrors } from "@/lib/members";
 
@@ -23,8 +20,37 @@ export const Route = createFileRoute("/auth")({
 
 type Panel = "member" | "admin";
 
+/** Posts to the auth API and returns the error message, or null on success. */
+async function post(
+  action: "signin" | "signup",
+  body: Record<string, string>,
+): Promise<{ error: string | null; fields?: FieldErrors }> {
+  try {
+    const res = await fetch(`/api/auth/${action}`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) return { error: null };
+    const payload = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      errors?: FieldErrors;
+      reference?: string;
+    };
+    // A reference means the server logged a stack for it, so quote it.
+    const suffix = payload.reference ? ` (ref ${payload.reference})` : "";
+    return {
+      error: (payload.error ?? "That did not work") + suffix,
+      ...(payload.errors ? { fields: payload.errors } : {}),
+    };
+  } catch {
+    return { error: "Could not reach the server. Check your connection." };
+  }
+}
+
 function AuthPage() {
-  const { user, loading } = useSession();
+  const { user, loading, refresh } = useSession();
   const navigate = useNavigate();
   const [panel, setPanel] = useState<Panel>("member");
   const [mode, setMode] = useState<"in" | "up">("in");
@@ -36,14 +62,12 @@ function AuthPage() {
   const [adminId, setAdminId] = useState("");
   const [adminPass, setAdminPass] = useState("");
   const [busy, setBusy] = useState(false);
-  const [redirect, setRedirect] = useState<string | null>(null);
-
-  const verifyAdmin = useServerFn(checkAdminCredentials);
-  const recordAdminRole = useServerFn(claimAdminRole);
 
   useEffect(() => {
-    if (!loading && user) navigate({ to: redirect === "admin" ? "/admin" : "/home", replace: true });
-  }, [user, loading, navigate, redirect]);
+    if (!loading && user) {
+      navigate({ to: user.role === "admin" ? "/home" : "/home", replace: true });
+    }
+  }, [user, loading, navigate]);
 
   async function submitMember(e: FormEvent) {
     e.preventDefault();
@@ -55,93 +79,42 @@ function AuthPage() {
     }
 
     setBusy(true);
-    const digits = normalisePhone(phone);
-    const name = fullName.trim();
-
-    const res =
+    const result =
       mode === "in"
-        ? await supabase.auth.signInWithPassword({ email: email.trim(), password })
-        : await supabase.auth.signUp({
+        ? await post("signin", { email: email.trim(), password })
+        : await post("signup", {
             email: email.trim(),
             password,
-            // Stored on the auth user, so name and phone are captured without
-            // needing a new column. The admin console reads them from here.
-            options: { data: { full_name: name, phone: digits } },
+            fullName: fullName.trim(),
+            phone: normalisePhone(phone),
           });
     setBusy(false);
 
-    if (res.error) {
-      toast.error(res.error.message);
+    if (result.error) {
+      if (result.fields) setErrors(result.fields);
+      toast.error(result.error);
       return;
     }
-
-    if (mode === "up") {
-      // Mirror into the profile row the rest of the app already reads. Best
-      // effort: if email confirmation is on there is no session yet, and the
-      // details are still safe on the auth user.
-      const newUser = res.data.user;
-      if (newUser && res.data.session) {
-        await supabase
-          .from("profiles")
-          .upsert({ id: newUser.id, full_name: name, email: email.trim() }, { onConflict: "id" });
-      }
-      toast.success("Account created");
-    }
-    setRedirect("home");
+    if (mode === "up") toast.success("Account created");
+    await refresh();
   }
-
-  /** Clears a field's error as soon as the person starts fixing it. */
-  const clearError = (field: keyof FieldErrors) =>
-    setErrors((prev) => (prev[field] ? { ...prev, [field]: undefined } : prev));
 
   async function submitAdmin(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
-    const email = adminId.trim().toLowerCase();
-    try {
-      // The server holds the operator credentials and checks both fields. It
-      // never says which one was wrong, and it gates account creation below.
-      const check = await verifyAdmin({ data: { email, password: adminPass } });
-      if (!check.ok) {
-        toast.error("Those operator credentials aren't right");
-        return;
-      }
+    const result = await post("signin", { email: adminId.trim(), password: adminPass });
+    setBusy(false);
 
-      let { error } = await supabase.auth.signInWithPassword({ email, password: adminPass });
-
-      // First run: the operator account does not exist yet. Create it with the
-      // ordinary sign-up route, which needs no elevated key. Safe because the
-      // server already confirmed the operator password above.
-      if (error && /invalid login credentials/i.test(error.message)) {
-        const created = await supabase.auth.signUp({ email, password: adminPass });
-        if (created.error) {
-          toast.error(created.error.message);
-          return;
-        }
-        if (!created.data.session) {
-          toast.error("Admin account created. Confirm the email address, then sign in again.");
-          return;
-        }
-        error = null;
-      }
-
-      if (error) {
-        toast.error(error.message);
-        return;
-      }
-
-      // Best effort. Access rules may forbid writing your own role, and the
-      // console recognises the operator by email regardless.
-      await recordAdminRole().catch(() => undefined);
-
-      setRedirect("admin");
-      toast.success("Welcome to the admin console");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not open the admin console");
-    } finally {
-      setBusy(false);
+    if (result.error) {
+      toast.error("Those operator credentials aren't right");
+      return;
     }
+    toast.success("Welcome to the admin console");
+    await refresh();
   }
+
+  const clearError = (field: keyof FieldErrors) =>
+    setErrors((prev) => (prev[field] ? { ...prev, [field]: undefined } : prev));
 
   const input =
     "h-12 w-full rounded-2xl border border-hairline bg-background/60 px-4 text-[0.95rem] outline-none transition focus:ring-2 focus:ring-ring";
@@ -250,7 +223,7 @@ function AuthPage() {
                 setMode(mode === "in" ? "up" : "in");
                 setErrors({});
               }}
-              className="mt-6 w-full text-center text-sm text-muted-foreground hover:text-foreground"
+              className="mt-6 w-full rounded-full text-center text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {mode === "in" ? "New here? Create an account" : "Already have an account? Sign in"}
             </button>
@@ -267,7 +240,7 @@ function AuthPage() {
             <form onSubmit={submitAdmin} className="space-y-3">
               <input
                 className={input}
-                type="text"
+                type="email"
                 placeholder="Admin email"
                 autoComplete="username"
                 required

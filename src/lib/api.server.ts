@@ -33,7 +33,24 @@ import {
   type MediaEnv,
   type PhotoMeta,
 } from "./media.server.ts";
-import { getMemberById, putMember, toPublicMember } from "./auth/members.server.ts";
+import {
+  getMemberById,
+  getMemberByEmail,
+  putMember,
+  toPublicMember,
+  createMember,
+  authenticate,
+  ensureRole,
+  type MemberRecord,
+} from "./auth/members.server.ts";
+import {
+  createSessionToken,
+  sessionCookieHeader,
+  clearSessionCookieHeader,
+  isSecureRequest,
+} from "./auth/session.ts";
+import { hashPassword } from "./auth/password.ts";
+import { validateSignUp } from "./members.ts";
 import { searchCollection } from "./face-index.server.ts";
 import { MATCH_MAX_DISTANCE } from "./face.ts";
 import type { R2Bucket } from "./storage.server.ts";
@@ -70,6 +87,18 @@ export type ScanRecord = {
   possible: ScanHit[];
   scannedAt: number;
   facesSearched: number;
+  /**
+   * Matches whose photo record was missing, so they could not be shown.
+   * Surfaced rather than swallowed: a scan that matches faces and displays
+   * nothing needs a different fix from one that matched nothing.
+   */
+  orphaned?: number;
+  /**
+   * True when the collection holds photos that the search index has not caught
+   * up with. Vectorize applies writes asynchronously, so a scan run moments
+   * after an upload genuinely cannot see those faces yet.
+   */
+  indexLagging?: boolean;
 };
 
 const collectionKey = (cid: string) => `meta/collection/${cid}`;
@@ -161,6 +190,14 @@ export function confidenceFor(distance: number, hops = 0): number {
 
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Entry point for the data API.
+ *
+ * Everything is wrapped so a thrown error becomes a JSON body with a reference,
+ * not an HTML error page. A 500 that says only "Request failed" is unactionable:
+ * the reference here is printed in the Worker log next to the stack, so any
+ * report can be traced to the exact failure.
+ */
 export async function handleApiRequest(
   request: Request,
   env: MediaEnv,
@@ -173,8 +210,27 @@ export async function handleApiRequest(
   }
   if (!url.pathname.startsWith(API_PREFIX + "/")) return null;
 
+  try {
+    return await route(request, env, url);
+  } catch (error) {
+    const reference = crypto.randomUUID().slice(0, 8);
+    console.error(`[api ${reference}] ${request.method} ${url.pathname}`, error);
+    return json(
+      {
+        error: error instanceof Error ? error.message : "Something went wrong",
+        reference,
+      },
+      500,
+    );
+  }
+}
+
+async function route(request: Request, env: MediaEnv, url: URL): Promise<Response> {
   const parts = url.pathname.slice(API_PREFIX.length + 1).split("/").filter(Boolean);
   const [head, ...rest] = parts;
+
+  // Sign-in and sign-up are the only routes reachable without a session.
+  if (head === "auth") return handleAuth(request, env, rest[0] ?? "");
 
   const userId = await currentUserId(request, env);
 
@@ -208,8 +264,9 @@ export async function handleApiRequest(
     return listMembers(env);
   }
 
-  if (head === "face-profile" && request.method === "POST") {
-    return saveFaceProfile(request, env, userId);
+  if (head === "face-profile") {
+    if (request.method === "POST") return saveFaceProfile(request, env, userId);
+    if (request.method === "DELETE") return forgetFace(env, member);
   }
 
   if (head === "scan") {
@@ -326,6 +383,161 @@ async function listPhotos(
     photos,
     ...(page.truncated && page.cursor ? { cursor: page.cursor } : {}),
   });
+}
+
+/* ---------------------------------- auth ---------------------------------- */
+
+/**
+ * Sign-up, sign-in and sign-out, on this Worker and nowhere else.
+ *
+ * Passwords are hashed with PBKDF2 through WebCrypto and sessions are signed
+ * cookies; both are covered by their own test suites. Nothing here talks to an
+ * outside service, which is the point: two identity systems disagreeing about
+ * who someone is caused every confusing permission error in this app.
+ */
+async function handleAuth(request: Request, env: MediaEnv, action: string): Promise<Response> {
+  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (!env.SESSION_SECRET) return json({ error: "SESSION_SECRET is not configured" }, 500);
+
+  const secure = isSecureRequest(request);
+
+  if (action === "signout") {
+    return new Response(JSON.stringify({ ok: true }), {
+      headers: {
+        "content-type": "application/json",
+        "set-cookie": clearSessionCookieHeader({ secure }),
+      },
+    });
+  }
+
+  let body: { email?: string; password?: string; fullName?: string; phone?: string };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Malformed body" }, 400);
+  }
+
+  const email = (body.email ?? "").trim();
+  const password = body.password ?? "";
+  if (!email || !password) return json({ error: "Email and password are required" }, 400);
+
+  if (action === "signup") {
+    const errors = validateSignUp({
+      fullName: body.fullName ?? "",
+      phone: body.phone ?? "",
+      email,
+      password,
+    });
+    if (Object.keys(errors).length > 0) return json({ error: "Check the form", errors }, 400);
+
+    const created = await createMember(env.PHOTOS, {
+      email,
+      password,
+      fullName: body.fullName ?? "",
+      phone: body.phone ?? "",
+    });
+    if (!created.ok) {
+      return created.error === "email-taken"
+        ? json({ error: "An account already uses that email" }, 409)
+        : json({ error: "Could not create the account" }, 500);
+    }
+    const member = await ensureRole(env.PHOTOS, created.member, env.ADMIN_EMAIL);
+    return signedIn(member, env.SESSION_SECRET, secure);
+  }
+
+  if (action === "signin") {
+    // The operator credentials in the environment are the authority for the
+    // console account. If they match, the account is created when missing and
+    // its stored password is brought into line when it is not.
+    //
+    // That second case matters: accounts left behind by the old migration hold
+    // a deliberately unusable password, so without this the operator could
+    // never sign in to their own console again. Only the configured address
+    // with the configured password reaches this, so it cannot be used to claim
+    // anyone else's account.
+    const adminEmail = env.ADMIN_EMAIL?.trim().toLowerCase();
+    const adminPassword = env.ADMIN_PASSWORD;
+    if (
+      adminEmail &&
+      adminPassword &&
+      email.toLowerCase() === adminEmail &&
+      password === adminPassword
+    ) {
+      const existing = await getMemberByEmail(env.PHOTOS, email);
+      if (!existing) {
+        const created = await createMember(env.PHOTOS, {
+          email,
+          password,
+          fullName: "VAYAM Designers",
+          phone: "",
+          role: "admin",
+        });
+        if (created.ok) return signedIn(created.member, env.SESSION_SECRET, secure);
+      } else {
+        const repaired = {
+          ...existing,
+          role: "admin" as const,
+          passwordHash: await hashPassword(password),
+          lastSignInAt: Date.now(),
+        };
+        await putMember(env.PHOTOS, repaired);
+        return signedIn(repaired, env.SESSION_SECRET, secure);
+      }
+    }
+
+    const member = await authenticate(env.PHOTOS, email, password);
+    // One message for both a missing account and a wrong password, so this
+    // cannot be used to discover which addresses are registered.
+    if (!member) return json({ error: "That email and password do not match" }, 401);
+
+    const withRole = await ensureRole(env.PHOTOS, member, env.ADMIN_EMAIL);
+    return signedIn(withRole, env.SESSION_SECRET, secure);
+  }
+
+  return json({ error: "Not found" }, 404);
+}
+
+async function signedIn(
+  member: Awaited<ReturnType<typeof authenticate>> & object,
+  secret: string,
+  secure: boolean,
+): Promise<Response> {
+  const token = await createSessionToken(member.id, secret);
+  return new Response(JSON.stringify(toPublicMember(member)), {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+      "set-cookie": sessionCookieHeader(token, { secure }),
+    },
+  });
+}
+
+/**
+ * Removes a member's face and everything derived from it.
+ *
+ * Clearing the embeddings alone is not enough: cached scan results were built
+ * from them and would keep showing matches computed from a face the member has
+ * asked us to forget.
+ */
+async function forgetFace(env: MediaEnv, member: MemberRecord): Promise<Response> {
+  await putMember(env.PHOTOS, {
+    ...member,
+    references: [],
+    referenceImageKey: null,
+    onboarded: false,
+  });
+
+  const stale: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.PHOTOS.list({ prefix: `scan/${member.id}/`, cursor, limit: 1000 });
+    for (const o of page.objects) stale.push(o.key);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  if (stale.length) await env.PHOTOS.delete(stale);
+
+  return json({ ok: true, clearedScans: stale.length });
 }
 
 /* --------------------------------- members -------------------------------- */
@@ -498,6 +710,17 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
   });
 
   const all = decorated.filter((h): h is NonNullable<typeof h> => h !== null);
+
+  // A match whose photo record is missing cannot be rendered, so it is dropped.
+  // Counting them makes that visible: a scan that matches faces and shows
+  // nothing is otherwise indistinguishable from a scan that matched nothing,
+  // and the two need completely different fixes.
+  const orphaned = outcome.matches.length - all.length;
+  if (orphaned > 0) {
+    console.warn(
+      `[scan] ${orphaned} match(es) in ${cid} had no photo record and were dropped`,
+    );
+  }
   const hits: ScanHit[] = [];
   const possible: ScanHit[] = [];
   for (const hit of all) {
@@ -509,6 +732,12 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
   hits.sort((a, b) => b.confidence - a.confidence);
   possible.sort((a, b) => b.confidence - a.confidence);
 
+  // Vectorize applies writes asynchronously, so a collection can hold photos
+  // whose faces are not searchable yet. Saying "no matches" then is wrong and
+  // sends people away; saying "still indexing" tells them to try again.
+  const photoCount = await countPhotos(env.PHOTOS, cid);
+  const indexLagging = photoCount > 0 && outcome.stats.seedFaces === 0;
+
   const record: ScanRecord = {
     userId,
     collectionId: cid,
@@ -516,6 +745,8 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
     possible,
     scannedAt: Date.now(),
     facesSearched: outcome.stats.seedFaces + outcome.stats.linkedFaces,
+    ...(orphaned > 0 ? { orphaned } : {}),
+    ...(indexLagging ? { indexLagging: true } : {}),
   };
   await writeJson(env.PHOTOS, scanKey(userId, cid), record);
   return json(record);

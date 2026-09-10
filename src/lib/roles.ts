@@ -1,33 +1,20 @@
-import { useQuery } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
-import { isAdminSession } from "@/lib/admin.functions";
+import { useSession } from "./session";
 
 /**
- * True when the signed-in user is the operator.
+ * True when the signed-in person is the operator.
  *
- * Decided on the server, from the email inside the caller's verified token, so
- * it does not depend on a row existing in user_roles. That row often cannot be
- * written by the account itself under normal access rules, which used to leave
- * the operator locked out of their own console until someone edited the
- * database by hand.
+ * The role travels with the session, decided on the server from the member's
+ * own record. There is no second lookup and no second identity system to
+ * disagree with it, which is what previously produced an account that could
+ * create a collection but not upload into it.
  *
- * This only drives what the interface offers. Anything that actually matters is
+ * This only drives what the interface offers. Every action that matters is
  * checked again on the server at the point of use.
  */
-export function useIsAdmin(userId: string | undefined) {
-  const check = useServerFn(isAdminSession);
-  return useQuery({
-    queryKey: ["is-admin", userId],
-    enabled: !!userId,
-    staleTime: 5 * 60 * 1000,
-    retry: false,
-    queryFn: async () => {
-      try {
-        return await check();
-      } catch {
-        // An unauthenticated or expired session is simply not an admin.
-        return false;
-      }
-    },
-  });
+export function useIsAdmin(_userId?: string | undefined) {
+  const { user, loading } = useSession();
+  return {
+    data: user?.role === "admin",
+    isLoading: loading,
+  };
 }
