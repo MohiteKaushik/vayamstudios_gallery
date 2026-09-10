@@ -35,3 +35,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# The uploader remembers where it got to. Local to whichever machine ran it.
+tools/uploaded.json
+tools/watcher.json

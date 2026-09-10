@@ -37,8 +37,8 @@ operator password afterwards.
 
 from __future__ import annotations
 
+import argparse
 import json
-import mimetypes
 import os
 import sys
 import time
@@ -85,7 +85,27 @@ class Settings:
     collection_name: str
 
 
-def ask(prompt: str, default: str = "") -> str:
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Watches a folder and uploads new photographs to the VAYAM gallery.",
+    )
+    p.add_argument("--folder", help="Folder to watch. Asked for if not given.")
+    p.add_argument("--email", help="Operator email. Asked for if not given.")
+    p.add_argument("--event", help="Event name or id to upload into.")
+    p.add_argument("--url", help="Gallery address.")
+    p.add_argument(
+        "--once",
+        action="store_true",
+        help="Upload what is already there and stop, instead of watching.",
+    )
+    return p.parse_args()
+
+
+def ask(prompt: str, default: str = "", preset: str = "") -> str:
+    """A question, unless the answer was already given on the command line."""
+    if preset:
+        print(f"{prompt}: {preset}")
+        return preset
     suffix = f" [{default}]" if default else ""
     answer = input(f"{prompt}{suffix}: ").strip()
     return answer or default
@@ -129,12 +149,27 @@ def sign_in(session: requests.Session, base: str, email: str, password: str) -> 
     print(f"Signed in as {me.get('email')}")
 
 
-def choose_collection(session: requests.Session, base: str, s: Settings) -> None:
+def choose_collection(
+    session: requests.Session, base: str, s: Settings, wanted: str = ""
+) -> None:
     r = session.get(f"{base}/api/collections", timeout=30)
     r.raise_for_status()
     events = r.json().get("collections", [])
     if not events:
         raise SystemExit("There are no events yet. Create one in the console first.")
+
+    if wanted:
+        match = next(
+            (e for e in events if e["id"] == wanted or e["name"].lower() == wanted.lower()),
+            None,
+        )
+        if not match:
+            names = ", ".join(e["name"] for e in events)
+            raise SystemExit(f"No event called '{wanted}'. There is: {names}")
+        s.collection_id = match["id"]
+        s.collection_name = match["name"]
+        print(f"Uploading into: {match['name']}")
+        return
 
     if s.collection_id and any(e["id"] == s.collection_id for e in events):
         current = next(e for e in events if e["id"] == s.collection_id)
@@ -213,10 +248,15 @@ def settled(path: Path) -> bool:
 
 
 def main() -> None:
+    args = parse_args()
     s = load_settings()
-    s.base_url = ask("Gallery address", s.base_url or "https://vayamstudios-gallery.vayamdesigners.workers.dev").rstrip("/")
-    s.email = ask("Operator email", s.email)
-    s.folder = ask("Folder to watch", s.folder or str(HERE))
+    s.base_url = ask(
+        "Gallery address",
+        s.base_url or "https://vayamstudios-gallery.vayamdesigners.workers.dev",
+        args.url or "",
+    ).rstrip("/")
+    s.email = ask("Operator email", s.email, args.email or "")
+    s.folder = ask("Folder to watch", s.folder or str(HERE), args.folder or "")
 
     folder = Path(s.folder).expanduser().resolve()
     if not folder.is_dir():
@@ -227,7 +267,7 @@ def main() -> None:
 
     session = requests.Session()
     sign_in(session, s.base_url, s.email, password)
-    choose_collection(session, s.base_url, s)
+    choose_collection(session, s.base_url, s, args.event or "")
     save_settings(s)
 
     done = load_uploaded()
@@ -236,7 +276,10 @@ def main() -> None:
     print(f"{len(done)} photo(s) already uploaded and will be skipped.")
     print("\nNow open that event in the console and press 'Live indexing',")
     print("or nobody will be able to search these photographs.")
-    print("\nPress Ctrl+C to stop.\n")
+    if args.once:
+        print("\nUploading what is already there, then stopping.\n")
+    else:
+        print("\nPress Ctrl+C to stop.\n")
 
     while True:
         try:
@@ -262,6 +305,9 @@ def main() -> None:
                             sign_in(session, s.base_url, s.email, password)
                         except SystemExit as bad:
                             print(f"  could not sign in again: {bad}")
+            if args.once:
+                print(f"\nDone. {len(done)} photo(s) uploaded in total.")
+                return
             time.sleep(POLL_SECONDS)
         except KeyboardInterrupt:
             print(f"\nStopped. {len(done)} photo(s) uploaded in total.")
