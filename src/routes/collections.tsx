@@ -7,7 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { ScanProgress } from "@/components/ScanProgress";
 import { PhotoGrid, PhotoGridSkeleton, type GridPhoto } from "@/components/PhotoGrid";
 import { PhotoViewer } from "@/components/PhotoViewer";
-import { EmptyState, GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
+import { EmptyState, GlassButton, GlassCard, Shimmer, useConfirm } from "@/components/ui-kit";
 import { useRequireAuth } from "@/lib/auth-gate";
 import { formatCount } from "@/lib/images";
 import { api, ApiError, confidencePercent, type Photo, type ScanHit, type ScanResult } from "@/lib/api";
@@ -37,6 +37,7 @@ function CollectionsPage() {
 }
 
 function Collections({ isAdmin }: { isAdmin: boolean }) {
+  const { ask, dialog } = useConfirm();
   const { shared } = Route.useSearch();
   const navigate = Route.useNavigate();
   const qc = useQueryClient();
@@ -179,15 +180,13 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
                     <button
                       aria-label={`Delete ${c.name}`}
                       disabled={remove.isPending}
-                      onClick={(e) => {
+                      onClick={async (e) => {
                         e.stopPropagation();
-                        if (
-                          confirm(
-                            `Delete "${c.name}" and all ${c.photoCount} photo(s)? This cannot be undone.`,
-                          )
-                        ) {
-                          remove.mutate(c.id);
-                        }
+                        const ok = await ask({
+                          title: `Delete "${c.name}"?`,
+                          body: `${formatCount(c.photoCount, "photo")} will be removed. This cannot be undone.`,
+                        });
+                        if (ok) remove.mutate(c.id);
                       }}
                       className="press shrink-0 rounded-full p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
                     >
@@ -210,6 +209,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
           />
         )}
       </section>
+      {dialog}
     </AppShell>
   );
 }
@@ -217,6 +217,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
 /* ------------------------------- Admin view ------------------------------- */
 
 function AdminCollection({ collectionId, name }: { collectionId: string; name: string }) {
+  const { ask, dialog } = useConfirm();
   const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<BulkProgress | null>(null);
@@ -329,10 +330,12 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
               size="sm"
               icon={<Trash2 className="size-4" />}
               loading={removeSelected.isPending}
-              onClick={() => {
-                if (confirm(`Delete ${selected.size} photo(s)? This cannot be undone.`)) {
-                  removeSelected.mutate([...selected]);
-                }
+              onClick={async () => {
+                const ok = await ask({
+                  title: `Delete ${formatCount(selected.size, "photo")}?`,
+                  body: "This cannot be undone.",
+                });
+                if (ok) removeSelected.mutate([...selected]);
               }}
             >
               Delete
@@ -376,6 +379,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
       {open !== null && (
         <PhotoViewer photos={grid} index={open} onIndexChange={setOpen} onClose={() => setOpen(null)} />
       )}
+      {dialog}
     </>
   );
 }
@@ -386,6 +390,16 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
   const qc = useQueryClient();
   const [open, setOpen] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
+  // Opening an event shows the event. Finding yourself in it is a thing you
+  // then choose to do, from the button in the corner, rather than a wall that
+  // stands between a member and the photographs.
+  const [view, setView] = useState<"all" | "mine">("all");
+
+  const allPhotos = useQuery({
+    queryKey: ["photos", collectionId],
+    queryFn: () => api.allPhotos(collectionId),
+    retry: false,
+  });
 
   const results = useQuery({
     queryKey: ["scan", collectionId],
@@ -395,6 +409,7 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
 
   async function scan() {
     setScanning(true);
+    setView("mine");
     try {
       const r = await api.scan(collectionId);
       qc.setQueryData(["scan", collectionId], r);
@@ -419,15 +434,9 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
     }
   }
 
-  // A member sees the photographs they are in and nothing else.
-  //
-  // There was a "browse all" view here, added when matching was missing people
-  // and they needed a way through to the rest. It is gone at the studio's
-  // request: the event is other guests' photographs too, and a member scrolling
-  // all of them is not what was wanted. The matching threshold is now tight
-  // enough that what does come back is theirs.
   const hits: ScanHit[] = results.data?.hits ?? [];
-  const grid: GridPhoto[] = hits.map(toGridHit);
+  const everything: GridPhoto[] = (allPhotos.data ?? []).map(toGridPhoto);
+  const grid: GridPhoto[] = view === "mine" ? hits.map(toGridHit) : everything;
   const hasScanned = (results.data?.scannedAt ?? 0) > 0;
 
   return (
@@ -436,12 +445,27 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
         <div>
           <h1 className="text-3xl font-semibold tracking-[-0.03em]">{name}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {hasScanned ? `${formatCount(hits.length, "photo")} of you` : "Not scanned yet"}
+            {view === "mine"
+              ? hasScanned
+                ? `${formatCount(hits.length, "photo")} of you`
+                : "Not scanned yet"
+              : `${formatCount(everything.length, "photo")} from this event`}
           </p>
         </div>
-        <GlassButton icon={<ScanFace className="size-4" />} loading={scanning} onClick={scan}>
-          {hasScanned ? "Scan again" : "Find me"}
-        </GlassButton>
+        <div className="flex items-center gap-2">
+          {view === "mine" && (
+            <GlassButton variant="quiet" icon={<Layers className="size-4" />} onClick={() => setView("all")}>
+              All photos
+            </GlassButton>
+          )}
+          <GlassButton
+            icon={<ScanFace className="size-4" />}
+            loading={scanning}
+            onClick={() => (hasScanned && view === "all" ? setView("mine") : scan())}
+          >
+            {hasScanned && view === "all" ? "Find me" : hasScanned ? "Scan again" : "Find me"}
+          </GlassButton>
+        </div>
       </div>
 
       {scanning && (
@@ -454,19 +478,36 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
         </div>
       )}
 
-      {results.isLoading ? (
+      {view === "all" ? (
+        allPhotos.isLoading ? (
+          <PhotoGridSkeleton />
+        ) : everything.length === 0 ? (
+          <EmptyState
+            icon={<Layers className="size-7" strokeWidth={1.5} />}
+            title="Nothing here yet"
+            description="This event has no photos in it."
+          />
+        ) : (
+          <PhotoGrid photos={everything} onOpen={setOpen} />
+        )
+      ) : results.isLoading ? (
         <PhotoGridSkeleton />
       ) : !hasScanned ? (
         <EmptyState
           icon={<ScanFace className="size-7" strokeWidth={1.5} />}
-          title="Find yourself in this collection"
-          description="We compare against your reference face on your device. Only the photos you appear in are shown."
+          title="Find yourself in this event"
+          description="We compare against your reference face. Only the photos you appear in are shown."
         />
       ) : hits.length === 0 ? (
         <EmptyState
           icon={<ScanFace className="size-7" strokeWidth={1.5} />}
           title={emptyTitle(results.data)}
           description={results.data ? explainEmpty(results.data) : ""}
+          action={
+            <GlassButton variant="quiet" icon={<Layers className="size-4" />} onClick={() => setView("all")}>
+              See all photos
+            </GlassButton>
+          }
         />
       ) : (
         <PhotoGrid photos={grid} onOpen={setOpen} showConfidence />

@@ -22,10 +22,10 @@ export function AppShell({ children, wide }: { children: ReactNode; wide?: boole
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
           <button
             onClick={() => navigate({ to: "/home" })}
-            className="press flex h-6 items-center"
+            className="press flex h-10 items-center"
             aria-label="VAYAM Designers Gallery home"
           >
-            <Logo className="h-6" />
+            <Logo className="h-10" />
           </button>
 
 

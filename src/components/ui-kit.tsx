@@ -1,5 +1,8 @@
 import {
   forwardRef,
+  useCallback,
+  useEffect,
+  useState,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type KeyboardEvent,
@@ -166,4 +169,103 @@ export function EmptyState({
 
 export function Shimmer({ className }: { className?: string }) {
   return <div className={cn("shimmer rounded-2xl bg-secondary", className)} />;
+}
+
+/* --------------------------------- Confirm --------------------------------- */
+
+type ConfirmRequest = {
+  title: string;
+  body?: string;
+  confirmLabel?: string;
+  resolve: (ok: boolean) => void;
+};
+
+/**
+ * Asking "are you sure" without the browser's own dialog.
+ *
+ * window.confirm looked like the obvious thing to use and was, for a while, the
+ * reason the delete button did nothing at all. A browser is free to suppress a
+ * native dialog and return false without showing anything: Chrome does it after
+ * repeated dialogs from one page, an in-app webview does it, and a framed page
+ * does it unless the frame allows modals. The caller cannot tell a suppressed
+ * dialog from someone pressing Cancel, so the delete silently never ran and the
+ * operator saw a button that ignored them.
+ *
+ * This renders in the page, so it appears wherever the app itself appears.
+ *
+ *   const { ask, dialog } = useConfirm();
+ *   if (await ask({ title: "Delete this?" })) remove();
+ *   return <>{dialog}...</>
+ */
+export function useConfirm() {
+  const [pending, setPending] = useState<ConfirmRequest | null>(null);
+
+  const ask = useCallback(
+    (options: { title: string; body?: string; confirmLabel?: string }) =>
+      new Promise<boolean>((resolve) => setPending({ ...options, resolve })),
+    [],
+  );
+
+  const dialog = pending ? (
+    <ConfirmLayer
+      request={pending}
+      onSettle={(ok) => {
+        pending.resolve(ok);
+        setPending(null);
+      }}
+    />
+  ) : null;
+
+  return { ask, dialog };
+}
+
+function ConfirmLayer({
+  request,
+  onSettle,
+}: {
+  request: ConfirmRequest;
+  onSettle: (ok: boolean) => void;
+}) {
+  // Escape cancels, matching every other layer in the app. Anything that closes
+  // this has to settle the promise, or the caller waits for ever.
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") onSettle(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onSettle]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={request.title}
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-5 backdrop-blur-sm"
+      onClick={() => onSettle(false)}
+    >
+      <div
+        className="glass-surface w-full max-w-sm rounded-3xl p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-semibold tracking-[-0.02em]">{request.title}</h2>
+        {request.body && (
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{request.body}</p>
+        )}
+        <div className="mt-6 flex gap-2">
+          <GlassButton variant="quiet" full onClick={() => onSettle(false)}>
+            Cancel
+          </GlassButton>
+          <GlassButton
+            full
+            autoFocus
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            onClick={() => onSettle(true)}
+          >
+            {request.confirmLabel ?? "Delete"}
+          </GlassButton>
+        </div>
+      </div>
+    </div>
+  );
 }

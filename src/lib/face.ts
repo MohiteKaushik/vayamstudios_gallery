@@ -41,7 +41,22 @@ const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/mode
  * appeared at 0.349 and several more by 0.36, all of them large, sharply
  * focused faces rather than distant ones that a size filter would have caught.
  * The nearest true match sat at 0.333. There is no gap between the two, only a
- * boundary, and 0.34 is where it falls.
+ * boundary, and 0.34 was where it fell.
+ *
+ * It is set to 0.10 at the studio’s instruction, well inside that boundary,
+ * after wrong people were still getting through at 0.34. What 0.10 means on
+ * these photographs, measured across the live collections by using every face
+ * in turn as a reference:
+ *
+ *   collection    references that find nothing    at 0.34
+ *   demo                     33 of 33               20 of 33
+ *   event                    60 of 72               55 of 72
+ *   portraits                29 of 53               17 of 53
+ *
+ * At this distance a photograph matches a member only when it is very nearly
+ * the same image, so most members will find nothing at all. That is the cost of
+ * being certain with a 128-dimension descriptor, and it was chosen knowingly.
+ * Raising this one number is the whole of the change if that proves too strict.
  *
  * The consequence is deliberate and worth stating plainly: this is tight enough
  * that a member photographed from an unusual angle will be missed. That was the
@@ -53,7 +68,7 @@ const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/mode
  * note in face-index.server.ts for why the graph expansion cannot rescue that
  * either on photographs like these.
  */
-export const MATCH_MAX_DISTANCE = 0.34;
+export const MATCH_MAX_DISTANCE = 0.10;
 
 /**
  * Long edge each detection pass sees.

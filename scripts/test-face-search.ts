@@ -27,6 +27,8 @@ import {
   DEFAULT_LINK_DISTANCE,
   DEFAULT_ROUNDS,
 } from "../src/lib/face-search.ts";
+import { confidenceFor, CONFIDENT_THRESHOLD } from "../src/lib/api.server.ts";
+import { MATCH_MAX_DISTANCE } from "../src/lib/face.ts";
 
 const D = 128;
 const K_POSE = 1.1;
@@ -292,6 +294,45 @@ console.log("\n=== 6. speed on a realistic collection ===");
   check(`defaults are link ${DEFAULT_LINK_DISTANCE}, ${DEFAULT_ROUNDS} rounds`,
     DEFAULT_LINK_DISTANCE === 0.46 && DEFAULT_ROUNDS === 4);
 }
+
+// ===========================================================================
+console.log("\n=== 7. the percentage a member is shown ===");
+{
+  // This number used to be tied to the match threshold, so a result sitting
+  // exactly on the threshold always read 80 percent whatever the threshold
+  // happened to be. When strangers were getting through at 0.35 they arrived
+  // wearing 81 percent, and the figure argued for them. It is now read off a
+  // curve fixed to the measured distances, so it says the same thing about a
+  // photograph wherever the threshold is set.
+  const at = (d: number) => Math.round(confidenceFor(d) * 100);
+  console.log(`    0.00 ${at(0)}%   0.10 ${at(0.1)}%   0.20 ${at(0.2)}%   0.35 ${at(0.35)}%   0.46 ${at(0.46)}%   0.66 ${at(0.66)}%`);
+
+  check("an identical face reads near certain", at(0) >= 95, `${at(0)}%`);
+  check(
+    "the distance where the first real stranger appeared reads like a coin toss",
+    at(0.35) >= 35 && at(0.35) <= 55,
+    `${at(0.35)}%`,
+  );
+  check("where two different people sit reads very low", at(0.66) <= 10, `${at(0.66)}%`);
+
+  let monotone = true;
+  for (let d = 0; d < 1.4; d += 0.01) {
+    if (confidenceFor(d + 0.01) > confidenceFor(d) + 1e-9) monotone = false;
+  }
+  check("further away never reads as more confident", monotone);
+
+  check(
+    "a linked face reads lower than the same distance matched directly",
+    confidenceFor(0.2, 1) < confidenceFor(0.2, 0),
+  );
+  check("nothing ever reads below zero", confidenceFor(9) >= 0 && confidenceFor(0.5, 99) >= 0);
+  check(
+    "anything the threshold admits clears the bar it is shown against",
+    confidenceFor(MATCH_MAX_DISTANCE) >= CONFIDENT_THRESHOLD,
+    `${at(MATCH_MAX_DISTANCE)}% against a bar of ${Math.round(CONFIDENT_THRESHOLD * 100)}%`,
+  );
+}
+
 
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"}`);
 process.exit(failures === 0 ? 0 : 1);

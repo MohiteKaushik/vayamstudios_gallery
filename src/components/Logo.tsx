@@ -6,19 +6,25 @@ import { cn } from "@/lib/utils";
 // real artwork at public/vayam-logo-black.png and public/vayam-logo-white.png
 // and it renders exactly as designed.
 
-/** VAYAM Designers wordmark. Swaps automatically between light and dark themes. */
+/**
+ * VAYAM Designers wordmark. Swaps automatically between light and dark themes.
+ *
+ * The height comes from the class the caller passes. The images used to carry a
+ * fixed height of their own, which quietly overrode it, so every wordmark in the
+ * app rendered the same size whatever the call site asked for.
+ */
 export function Logo({ className }: { className?: string }) {
   return (
     <span className={cn("inline-flex items-center", className)}>
       <img
         src="/vayam-logo-black.png"
         alt="VAYAM Designers"
-        className="h-8 w-auto object-contain dark:hidden"
+        className="h-full w-auto object-contain dark:hidden"
       />
       <img
         src="/vayam-logo-white.png"
         alt="VAYAM Designers"
-        className="hidden h-8 w-auto object-contain dark:block"
+        className="hidden h-full w-auto object-contain dark:block"
       />
     </span>
   );

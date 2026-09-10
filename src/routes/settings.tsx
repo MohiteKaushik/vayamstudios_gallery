@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
-import { GlassButton, GlassCard } from "@/components/ui-kit";
+import { GlassButton, GlassCard, useConfirm } from "@/components/ui-kit";
 import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/auth-gate";
 import { useSession } from "@/lib/session";
@@ -55,9 +55,15 @@ function Settings({ userId, email }: { userId: string; email: string }) {
   // Members do not own photos; collections belong to the studio. Clearing a
   // members own data means clearing their face and their scan results, which
   // resetFace already does completely.
+  const { ask, dialog } = useConfirm();
+
   async function deleteAll() {
-    if (!confirm("Remove your face profile and every saved result? This cannot be undone.")) return;
-    await resetFace();
+    const ok = await ask({
+      title: "Remove your face profile?",
+      body: "Your reference face and every saved result are deleted. This cannot be undone.",
+      confirmLabel: "Remove",
+    });
+    if (ok) await resetFace();
   }
 
   async function signOut() {
@@ -103,6 +109,7 @@ function Settings({ userId, email }: { userId: string; email: string }) {
           Sign out
         </GlassButton>
       </Section>
+      {dialog}
     </AppShell>
   );
 }

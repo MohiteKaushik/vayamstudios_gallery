@@ -93,17 +93,10 @@ function EventDetail({ event, onBack }: { event: VayamEvent; onBack: () => void 
       {place && <p className="mt-1 text-sm text-muted-foreground">{place}</p>}
 
       <p className="mt-4 max-w-prose text-sm leading-relaxed text-muted-foreground">
-        Run end to end by VAYAM Designers{place ? ` in ${place}` : ""}
-        {event.year ? `, ${event.year}` : ""}. Planning, staging, branding and the
-        photography on the day. If you are putting together something similar, the
-        team can talk you through how this one came together.
+        Contact the team for photos.
       </p>
 
-      <h3 className="mb-3 mt-9 text-sm font-medium uppercase tracking-[0.12em] text-muted-foreground">
-        Contact the team
-      </h3>
-
-      <div className="space-y-2">
+      <div className="mt-6 space-y-2">
         <ContactRow
           href={contact.whatsappHref}
           external

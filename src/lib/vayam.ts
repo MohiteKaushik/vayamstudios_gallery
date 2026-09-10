@@ -50,8 +50,9 @@ export const events: VayamEvent[] = [
   { name: "TribeMeet 24", place: "Hyderabad" },
   { name: "TribeMeet 25", place: "Vijayawada" },
   { name: "The Conyape Retreat" },
-  { name: "Ioniq Connect" },
-  { name: "District 150" },
+  // One event run under both names, so it reads as a single line rather than
+  // as two entries a visitor would take for separate pieces of work.
+  { name: "District 150-Ioniq Connect" },
 ];
 
 /** The full title as it should read on screen. */

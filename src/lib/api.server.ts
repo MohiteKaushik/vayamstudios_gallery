@@ -131,8 +131,9 @@ const scanKey = (userId: string, cid: string) => `scan/${userId}/${cid}`;
  *
  *   1  threshold 0.46, graph expansion on
  *   2  threshold 0.34, expansion off, no marginal tier
+ *   3  threshold 0.10, confidence read from the measured curve
  */
-const MATCHER_VERSION = 2;
+const MATCHER_VERSION = 3;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -172,56 +173,80 @@ const READ_CONCURRENCY = 50;
 /* -------------------------------------------------------------------------- */
 
 /**
- * Turns a distance into a confidence a person can act on.
+ * Turns a distance into a percentage a person can act on.
  *
- * The old figure was `1 - distance / 1.1`, which put a solid match at 58
- * percent and read to a member like a coin flip. It carried no meaning; it was
- * just the distance rescaled.
+ * The number used to be anchored to the match threshold: whatever the threshold
+ * was, a match sitting exactly on it read 80 percent. So when strangers were
+ * getting through, they arrived wearing 81 percent, and the figure argued for
+ * them. A confidence that moves whenever the threshold moves is not telling
+ * anyone anything about the photograph.
  *
- * This maps the range that actually matters onto the range people expect. At or
- * below CERTAIN the same person is not in doubt, so it reads high. At the match
- * threshold it reads around 80, which is what "we are confident" should look
- * like. Past the threshold it falls away through the region where a match is
- * possible but wants a human glance, and reaches zero where a stranger sits.
+ * This is anchored to the photographs instead, from the distances measured
+ * across the live collections. Two faces of different people sit around 0.66
+ * apart, and the first stranger to reach a member's reference did so at 0.349.
+ * So 0.35 has to read as a coin toss, not as near certainty, and it does.
+ *
+ *   distance   reads as
+ *   0.00        99%      the same photograph
+ *   0.10        90%
+ *   0.20        75%
+ *   0.30        55%
+ *   0.35        45%      about where the first stranger appeared
+ *   0.46        25%
+ *   0.60        8%       about where different people sit
+ *   0.80+       2%
+ *
+ * The curve is independent of MATCH_MAX_DISTANCE on purpose. Move the threshold
+ * and the percentages stay honest; what changes is only how far down the curve
+ * a member is allowed to see.
  */
-export const CERTAIN_DISTANCE = 0.24;
-const STRANGER_DISTANCE = 0.95;
+const CONFIDENCE_CURVE: readonly (readonly [number, number])[] = [
+  [0.0, 0.99],
+  [0.1, 0.9],
+  [0.2, 0.75],
+  [0.3, 0.55],
+  [0.35, 0.45],
+  [0.46, 0.25],
+  [0.6, 0.08],
+  [0.8, 0.02],
+  [1.2, 0.0],
+];
+
+/** Kept for the tiering below and for anything that still reads it. */
+export const CERTAIN_DISTANCE = 0.1;
 
 /**
- * Below this a result would be offered as "possible" rather than asserted.
+ * The bar a result must clear to be shown at all.
  *
- * Nothing reaches it any more. The match threshold is tight enough that every
- * result is a direct match the model has no real doubt about, and the walk that
- * used to produce weaker multi-hop results is off. The constant stays because
- * the tiering is still correct if either of those changes back.
+ * Read against the curve above rather than against the threshold, so it means
+ * a fixed level of evidence. At the current match distance everything shown is
+ * far above it; loosen the match distance and this is what stops the weak
+ * results reaching a member.
  */
-export const CONFIDENT_THRESHOLD = 0.75;
+export const CONFIDENT_THRESHOLD = 0.4;
 
 /**
  * Hops are evidence too, and weaker evidence than a direct match.
  *
- * A face matched straight off the member's own reference is more certain than
- * one reached by chaining through three intermediate photos, even when both
- * measure the same distance to whatever linked them. Each hop takes a little
- * off, which is what separates the confident tier from the possible one for
- * turned-away shots.
+ * Nothing produces hops while the graph expansion is off, but the penalty
+ * stands so that a linked face never reads as confidently as a face matched
+ * straight off the member's own reference.
  */
 const HOP_PENALTY = 0.06;
 
 export function confidenceFor(distance: number, hops = 0): number {
-  let base: number;
-  if (distance <= CERTAIN_DISTANCE) {
-    // 0.98 down to 0.90 across the region where there is no real doubt.
-    base = 0.98 - (distance / CERTAIN_DISTANCE) * 0.08;
-  } else if (distance <= MATCH_MAX_DISTANCE) {
-    const t = (distance - CERTAIN_DISTANCE) / (MATCH_MAX_DISTANCE - CERTAIN_DISTANCE);
-    base = 0.9 - t * 0.1; // 0.90 -> 0.80
-  } else if (distance <= STRANGER_DISTANCE) {
-    const t = (distance - MATCH_MAX_DISTANCE) / (STRANGER_DISTANCE - MATCH_MAX_DISTANCE);
-    base = Math.max(0, 0.8 - t * 0.8); // 0.80 -> 0
-  } else {
-    base = 0;
+  const d = Number.isFinite(distance) ? Math.max(0, distance) : Infinity;
+
+  let base = 0;
+  for (let i = 1; i < CONFIDENCE_CURVE.length; i++) {
+    const [x0, y0] = CONFIDENCE_CURVE[i - 1]!;
+    const [x1, y1] = CONFIDENCE_CURVE[i]!;
+    if (d <= x1) {
+      base = y0 + ((d - x0) / (x1 - x0)) * (y1 - y0);
+      break;
+    }
   }
+
   return Math.max(0, base - hops * HOP_PENALTY);
 }
 

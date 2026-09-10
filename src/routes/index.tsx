@@ -45,7 +45,7 @@ function Landing() {
       <div className="ambient-field" aria-hidden />
       <header className="mx-auto flex h-20 max-w-6xl items-center justify-between px-5">
         <Link to="/" className="press flex h-8 items-center" aria-label="VAYAM Designers Gallery">
-          <Logo className="h-7" />
+          <Logo className="h-10" />
         </Link>
         <Link to={user ? "/home" : "/auth"}>
           <GlassButton variant="glass" size="sm">
@@ -87,7 +87,7 @@ function Landing() {
         <GlassCard className="overflow-hidden p-8 sm:p-12">
           <div className="flex flex-col gap-10 lg:flex-row lg:items-center lg:justify-between">
             <div className="max-w-xl">
-              <Logo className="h-9" />
+              <Logo className="h-12" />
               <h2 className="mt-7 text-balance text-3xl font-semibold leading-tight tracking-[-0.035em] sm:text-4xl">
                 India's finest design, branding and development company.
               </h2>
@@ -124,7 +124,7 @@ function Landing() {
       </section>
 
       <footer className="mx-auto flex max-w-5xl flex-col items-center gap-3 px-5 pb-14 text-center">
-        <Logo className="h-5 opacity-60" />
+        <Logo className="h-8 opacity-60" />
         <p className="text-xs text-muted-foreground">
           © {new Date().getFullYear()} VAYAM Designers. Photos and faces stay private to you.
         </p>
