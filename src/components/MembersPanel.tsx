@@ -1,11 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
 import { Download, Mail, MessageCircle, Phone, Search, UserRound, Users } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { EmptyState, GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
-import { listMembers } from "@/lib/members.functions";
 import { csvFileName, formatPhone, membersToCsv, type MemberRow } from "@/lib/members";
+import { api } from "@/lib/api";
 
 /**
  * Client list for the admin console.
@@ -14,12 +13,11 @@ import { csvFileName, formatPhone, membersToCsv, type MemberRow } from "@/lib/me
  * before it reads anything. This component only decides how it looks.
  */
 export function MembersPanel() {
-  const fetchMembers = useServerFn(listMembers);
   const [query, setQuery] = useState("");
 
   const members = useQuery({
     queryKey: ["members"],
-    queryFn: () => fetchMembers(),
+    queryFn: api.listMembers,
     retry: false,
   });
 
@@ -75,8 +73,8 @@ export function MembersPanel() {
             {members.error instanceof Error ? members.error.message : "Could not load members."}
           </p>
           <p className="mt-3 text-xs text-muted-foreground">
-            This panel needs SUPABASE_SERVICE_ROLE_KEY set in your .env file. Copy it from your
-            Supabase dashboard under Project settings, API.
+            Members are read from your R2 bucket. If this keeps failing, check that the bucket
+            binding is configured for the deployed Worker.
           </p>
         </GlassCard>
       ) : all.length === 0 ? (

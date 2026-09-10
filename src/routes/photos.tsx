@@ -3,10 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { Images } from "lucide-react";
 import { useState } from "react";
 import { AppShell } from "@/components/AppShell";
-import { PhotoGrid } from "@/components/PhotoGrid";
+import { PhotoGrid, PhotoGridSkeleton, type GridPhoto } from "@/components/PhotoGrid";
 import { PhotoViewer } from "@/components/PhotoViewer";
-import { EmptyState, Shimmer } from "@/components/ui-kit";
-import { supabase } from "@/integrations/supabase/client";
+import { EmptyState } from "@/components/ui-kit";
+import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/auth-gate";
 import { formatCount } from "@/lib/images";
 
@@ -31,17 +31,29 @@ function PhotosPage() {
 function Photos({ userId }: { userId: string }) {
   const [open, setOpen] = useState<number | null>(null);
 
+  // Every collection this member has scanned, gathered from their cached
+  // results. Each of those is one read, so this stays cheap even with many
+  // collections, and it needs no new endpoint.
   const mine = useQuery({
-    queryKey: ["my-shared-matches", userId],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("scan_results")
-        .select("similarity, shared_photos(id, storage_path, file_name, width, height, faces_count)")
-        .eq("user_id", userId)
-        .order("similarity", { ascending: false });
-      return (data ?? [])
-        .filter((r) => r.shared_photos)
-        .map((r) => ({ ...r.shared_photos!, best_similarity: r.similarity }));
+    queryKey: ["my-photos", userId],
+    retry: false,
+    queryFn: async (): Promise<GridPhoto[]> => {
+      const collections = await api.listCollections();
+      const scans = await Promise.all(
+        collections.map((c) => api.cachedScan(c.id).catch(() => null)),
+      );
+      return scans
+        .flatMap((s) => s?.hits ?? [])
+        .sort((a, b) => b.confidence - a.confidence)
+        .map((h) => ({
+          id: h.photoId,
+          thumbUrl: h.thumbUrl,
+          fullUrl: h.fullUrl,
+          width: h.width,
+          height: h.height,
+          fileName: h.fileName,
+          confidence: h.confidence,
+        }));
     },
   });
 
@@ -57,11 +69,7 @@ function Photos({ userId }: { userId: string }) {
       </div>
 
       {mine.isLoading ? (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <Shimmer key={i} className="aspect-[3/4]" />
-          ))}
-        </div>
+        <PhotoGridSkeleton />
       ) : list.length === 0 ? (
         <EmptyState
           icon={<Images className="size-7" strokeWidth={1.5} />}
@@ -69,7 +77,7 @@ function Photos({ userId }: { userId: string }) {
           description="Open a collection and tap “Find me” to pull out the photos you appear in."
         />
       ) : (
-        <PhotoGrid photos={list} onOpen={setOpen} />
+        <PhotoGrid photos={list} onOpen={setOpen} showConfidence />
       )}
 
       {open !== null && (

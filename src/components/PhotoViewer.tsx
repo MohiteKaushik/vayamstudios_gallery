@@ -1,15 +1,19 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, Download, Heart, Info, X } from "lucide-react";
 import { GlassButton } from "./ui-kit";
-import { downloadPhoto, signedUrl } from "@/lib/photo-urls";
+import { downloadPhoto } from "@/lib/download";
 import { cn } from "@/lib/utils";
 
 export type ViewerPhoto = {
   id: string;
-  storage_path: string;
-  file_name?: string | null;
-  best_similarity?: number | null;
-  faces_count?: number | null;
+  /** Full-size image, served by the Worker behind the session cookie. */
+  fullUrl: string;
+  fileName?: string | null;
+  /** 0 to 1, when this photo came from a scan. */
+  confidence?: number | undefined;
+  facesCount?: number | null;
+  /** 0 when matched directly, higher when reached through the face graph. */
+  hops?: number | undefined;
 };
 
 export function PhotoViewer({
@@ -28,17 +32,8 @@ export function PhotoViewer({
   onToggleFavorite?: (id: string) => void;
 }) {
   const photo = photos[index];
-  const [url, setUrl] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    setUrl(null);
-    if (photo) signedUrl(photo.storage_path).then((u) => active && setUrl(u));
-    return () => {
-      active = false;
-    };
-  }, [photo?.storage_path]);
+  const url = photo?.fullUrl ?? null;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -92,7 +87,7 @@ export function PhotoViewer({
             variant="ghost"
             size="sm"
             aria-label="Download photo"
-            onClick={() => downloadPhoto(photo.storage_path, photo.file_name ?? undefined)}
+            onClick={() => downloadPhoto(photo.fullUrl, photo.fileName ?? undefined)}
             icon={<Download className="size-4" />}
           />
         </div>
@@ -103,7 +98,7 @@ export function PhotoViewer({
           <img
             key={photo.id}
             src={url}
-            alt={photo.file_name ?? "Photo"}
+            alt={photo.fileName ?? "Photo"}
             className="fade-in max-h-full max-w-full rounded-2xl object-contain shadow-[var(--shadow-lifted)]"
           />
         ) : (
@@ -135,12 +130,16 @@ export function PhotoViewer({
           <p className="mb-2 font-medium">Match details</p>
           <dl className="grid grid-cols-2 gap-y-1 text-muted-foreground sm:grid-cols-4">
             <dt>File</dt>
-            <dd className="truncate text-foreground">{photo.file_name ?? "—"}</dd>
+            <dd className="truncate text-foreground">{photo.fileName ?? "—"}</dd>
             <dt>Faces detected</dt>
-            <dd className="text-foreground">{photo.faces_count ?? 0}</dd>
+            <dd className="text-foreground">{photo.facesCount ?? 0}</dd>
             <dt>Match confidence</dt>
             <dd className="text-foreground">
-              {photo.best_similarity != null ? `${Math.round(photo.best_similarity * 100)}%` : "—"}
+              {photo.confidence != null ? `${Math.round(photo.confidence * 100)}%` : "—"}
+            </dd>
+            <dt>How it was found</dt>
+            <dd className="text-foreground">
+              {photo.hops == null ? "—" : photo.hops === 0 ? "Matched your reference photo" : "Reached through a turned-away view"}
             </dd>
           </dl>
         </div>

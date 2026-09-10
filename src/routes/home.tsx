@@ -7,12 +7,11 @@ import { AppShell } from "@/components/AppShell";
 import { MembersPanel } from "@/components/MembersPanel";
 import { EventShowcase } from "@/components/EventShowcase";
 import { EmptyState, GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/auth-gate";
 import { loadEngine } from "@/lib/face";
 import { formatCount } from "@/lib/images";
-import { signedUrl } from "@/lib/photo-urls";
-import { saveFaceProfile } from "@/lib/pipeline";
+import { enrolFace } from "@/lib/enroll";
 import { useIsAdmin } from "@/lib/roles";
 
 export const Route = createFileRoute("/home")({
@@ -36,27 +35,16 @@ function HomePage() {
 function Home({ userId }: { userId: string }) {
   const qc = useQueryClient();
   const isAdmin = useIsAdmin(userId);
+  // Whether this member has enrolled comes from their own record now.
   const profile = useQuery({
     queryKey: ["face-profile", userId],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("face_profiles")
-        .select("id, image_path, descriptor")
-        .eq("user_id", userId)
-        .maybeSingle();
-      return data ?? null;
-    },
+    retry: false,
+    queryFn: () => api.me().then((m) => (m.onboarded ? m : null)).catch(() => null),
   });
   const sharedCollections = useQuery({
-    queryKey: ["shared-collections"],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("shared_collections")
-        .select("id, name, description, created_at, shared_photos(count)")
-        .order("created_at", { ascending: false })
-        .limit(6);
-      return data ?? [];
-    },
+    queryKey: ["collections"],
+    retry: false,
+    queryFn: () => api.listCollections().then((c) => c.slice(0, 6)),
   });
 
   useEffect(() => {
@@ -84,12 +72,12 @@ function Home({ userId }: { userId: string }) {
         <ul className="space-y-2">
           {sharedCollections.data.map((c) => (
             <li key={c.id}>
-              <Link to="/collections" search={{ shared: c.id }}>
+              <Link to="/collections" search={{ shared: c.id }} aria-label={`Open ${c.name}`}>
                 <GlassCard interactive className="flex items-center justify-between px-5 py-4">
                   <div>
                     <p className="font-medium tracking-[-0.01em]">{c.name}</p>
                     <p className="text-xs text-muted-foreground">
-                      {formatCount(c.shared_photos?.[0]?.count ?? 0, "photo")}
+                      {formatCount(c.photoCount, "photo")}
                       {c.description ? ` · ${c.description}` : ""}
                     </p>
                   </div>
@@ -137,7 +125,7 @@ function Home({ userId }: { userId: string }) {
         <FaceSetup userId={userId} onDone={() => qc.invalidateQueries({ queryKey: ["face-profile", userId] })} />
       ) : (
         <>
-          <FaceCard profilePath={profile.data.image_path} />
+          <FaceCard />
           {collectionList}
         </>
       )}
@@ -157,7 +145,7 @@ function FaceSetup({ userId, onDone }: { userId: string; onDone: () => void }) {
     if (!file) return;
     setBusy(true);
     try {
-      const { error } = await saveFaceProfile(userId, file);
+      const { error } = await enrolFace(file);
       if (error) toast.error(error);
       else {
         toast.success("Face profile saved");
@@ -193,18 +181,12 @@ function FaceSetup({ userId, onDone }: { userId: string; onDone: () => void }) {
   );
 }
 
-function FaceCard({ profilePath }: { profilePath: string }) {
-  const [avatar, setAvatar] = useState<string | null>(null);
-
-  useEffect(() => {
-    signedUrl(profilePath).then(setAvatar);
-  }, [profilePath]);
-
+function FaceCard() {
   return (
     <section className="rise-in">
       <div className="mb-8 flex items-center gap-4">
-        <div className="size-14 overflow-hidden rounded-full bg-secondary">
-          {avatar && <img src={avatar} alt="Your reference face" className="size-full object-cover" />}
+        <div className="flex size-14 items-center justify-center overflow-hidden rounded-full bg-secondary">
+          <UserRound className="size-6 text-muted-foreground" strokeWidth={1.5} />
         </div>
         <div>
           <h1 className="text-2xl font-semibold tracking-[-0.03em]">Find yourself</h1>

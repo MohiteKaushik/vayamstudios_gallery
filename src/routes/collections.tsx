@@ -1,17 +1,16 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ImagePlus, Layers, Plus, ScanFace, Trash2 } from "lucide-react";
+import { createFileRoute } from "@tanstack/react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronLeft, ImagePlus, Layers, Plus, ScanFace, Trash2, X } from "lucide-react";
 import { useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { ScanProgress } from "@/components/ScanProgress";
-import { PhotoGrid, usePhotoUrls } from "@/components/PhotoGrid";
+import { PhotoGrid, PhotoGridSkeleton, type GridPhoto } from "@/components/PhotoGrid";
 import { PhotoViewer } from "@/components/PhotoViewer";
 import { EmptyState, GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
-import { supabase } from "@/integrations/supabase/client";
 import { useRequireAuth } from "@/lib/auth-gate";
-import { scanSharedCollection, NoFaceProfileError, type ScanProgress as ScanState } from "@/lib/scan";
 import { formatCount } from "@/lib/images";
+import { api, ApiError, confidencePercent, type Photo, type ScanHit } from "@/lib/api";
 import { uploadPhotos, uploadSavings, type BulkProgress } from "@/lib/upload";
 import { useIsAdmin } from "@/lib/roles";
 
@@ -34,88 +33,56 @@ function CollectionsPage() {
   const { user } = useRequireAuth();
   const isAdmin = useIsAdmin(user?.id);
   if (!user || isAdmin.isLoading) return null;
-  return <Collections userId={user.id} isAdmin={!!isAdmin.data} />;
+  return <Collections isAdmin={!!isAdmin.data} />;
 }
 
-function Collections({ userId, isAdmin }: { userId: string; isAdmin: boolean }) {
+function Collections({ isAdmin }: { isAdmin: boolean }) {
   const { shared } = Route.useSearch();
   const navigate = Route.useNavigate();
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [creating, setCreating] = useState(false);
 
-  const sharedCollections = useQuery({
-    queryKey: ["shared-collections"],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("shared_collections")
-        .select("id, name, description, cover_path, created_at, shared_photos(count)")
-        .order("created_at", { ascending: false });
-      return data ?? [];
-    },
+  const collections = useQuery({
+    queryKey: ["collections"],
+    queryFn: api.listCollections,
+    retry: false,
   });
-  const covers = usePhotoUrls(
-    (sharedCollections.data ?? []).filter((c) => c.cover_path).map((c) => ({ storage_path: c.cover_path! })),
-  );
 
-  async function create(e: FormEvent) {
-    e.preventDefault();
-    if (!name.trim()) return;
-    setCreating(true);
-    const { data, error } = await supabase
-      .from("shared_collections")
-      .insert({ name: name.trim(), description: description.trim() || null, created_by: userId })
-      .select("id")
-      .single();
-    setCreating(false);
-    if (error || !data) {
-      toast.error(error?.message ?? "Could not create the collection");
-      return;
-    }
-    setName("");
-    setDescription("");
-    await qc.invalidateQueries({ queryKey: ["shared-collections"] });
-    navigate({ to: ".", search: { shared: data.id } });
-  }
+  const create = useMutation({
+    mutationFn: () => api.createCollection(name.trim(), description.trim() || undefined),
+    onSuccess: (created) => {
+      setName("");
+      setDescription("");
+      qc.invalidateQueries({ queryKey: ["collections"] });
+      navigate({ to: ".", search: { shared: created.id } });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not create the collection"),
+  });
 
-  async function remove(cid: string) {
-    if (!confirm("Delete this collection and all its photos?")) return;
-    const { data: photos } = await supabase.from("shared_photos").select("storage_path").eq("collection_id", cid);
-    const paths = (photos ?? []).map((p) => p.storage_path);
-    for (let i = 0; i < paths.length; i += 100) await supabase.storage.from("photos").remove(paths.slice(i, i + 100));
-    const { error } = await supabase.from("shared_collections").delete().eq("id", cid);
-    if (error) {
-      toast.error(error.message);
-      return;
-    }
-    qc.invalidateQueries({ queryKey: ["shared-collections"] });
-  }
+  const remove = useMutation({
+    mutationFn: (cid: string) => api.deletePhotos(cid),
+    onSuccess: (r) => {
+      toast.success(`Collection deleted, ${formatCount(r.deleted, "photo")} removed`);
+      qc.invalidateQueries({ queryKey: ["collections"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not delete the collection"),
+  });
 
   if (shared) {
-    const current = sharedCollections.data?.find((c) => c.id === shared);
+    const current = collections.data?.find((c) => c.id === shared);
     return (
       <AppShell wide>
         <button
           onClick={() => navigate({ to: ".", search: { shared: undefined } })}
-          className="press mb-5 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+          className="press mb-5 inline-flex items-center gap-1 rounded-full text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ChevronLeft className="size-4" /> Collections
         </button>
         {isAdmin ? (
-          <AdminCollection
-            userId={userId}
-            collectionId={shared}
-            name={current?.name ?? "Collection"}
-            description={current?.description}
-          />
+          <AdminCollection collectionId={shared} name={current?.name ?? "Collection"} />
         ) : (
-          <MemberCollection
-            userId={userId}
-            collectionId={shared}
-            name={current?.name ?? "Collection"}
-            description={current?.description}
-          />
+          <MemberCollection collectionId={shared} name={current?.name ?? "Collection"} />
         )}
       </AppShell>
     );
@@ -134,7 +101,13 @@ function Collections({ userId, isAdmin }: { userId: string; isAdmin: boolean }) 
       </p>
 
       {isAdmin && (
-        <form onSubmit={create} className="mt-7 space-y-2.5">
+        <form
+          onSubmit={(e: FormEvent) => {
+            e.preventDefault();
+            if (name.trim()) create.mutate();
+          }}
+          className="mt-7 space-y-2.5"
+        >
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -150,7 +123,12 @@ function Collections({ userId, isAdmin }: { userId: string; isAdmin: boolean }) 
               className={input}
               aria-label="Collection description"
             />
-            <GlassButton type="submit" icon={<Plus className="size-4" />} loading={creating} disabled={!name.trim()}>
+            <GlassButton
+              type="submit"
+              icon={<Plus className="size-4" />}
+              loading={create.isPending}
+              disabled={!name.trim()}
+            >
               New collection
             </GlassButton>
           </div>
@@ -158,11 +136,20 @@ function Collections({ userId, isAdmin }: { userId: string; isAdmin: boolean }) 
       )}
 
       <section className="mt-9">
-        {sharedCollections.isLoading ? (
+        {collections.isLoading ? (
           <Shimmer className="h-40" />
-        ) : sharedCollections.data?.length ? (
+        ) : collections.isError ? (
+          <EmptyState
+            tone="error"
+            icon={<Layers className="size-7" strokeWidth={1.5} />}
+            title="Collections unavailable"
+            description={
+              collections.error instanceof Error ? collections.error.message : "Could not load collections."
+            }
+          />
+        ) : collections.data?.length ? (
           <div className="grid gap-3 sm:grid-cols-2">
-            {sharedCollections.data.map((c) => (
+            {collections.data.map((c) => (
               <GlassCard
                 key={c.id}
                 interactive
@@ -171,30 +158,38 @@ function Collections({ userId, isAdmin }: { userId: string; isAdmin: boolean }) 
                 className="group overflow-hidden"
               >
                 <div className="aspect-[16/10] overflow-hidden bg-secondary">
-                  {c.cover_path && covers[c.cover_path] && (
+                  {c.coverUrl && (
                     <img
-                      src={covers[c.cover_path]}
+                      src={c.coverUrl}
                       alt=""
-                      className="fade-in size-full object-cover transition duration-700 group-hover:scale-[1.03]"
+                      loading="lazy"
+                      className="size-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
                     />
                   )}
                 </div>
-                <div className="flex items-center justify-between gap-3 px-5 py-4">
+                <div className="flex items-start justify-between gap-3 px-5 py-4">
                   <div className="min-w-0">
                     <p className="truncate font-medium tracking-[-0.01em]">{c.name}</p>
                     <p className="truncate text-xs text-muted-foreground">
-                      {formatCount(c.shared_photos?.[0]?.count ?? 0, "photo")}
+                      {formatCount(c.photoCount, "photo")}
                       {c.description ? ` · ${c.description}` : ""}
                     </p>
                   </div>
                   {isAdmin && (
                     <button
                       aria-label={`Delete ${c.name}`}
+                      disabled={remove.isPending}
                       onClick={(e) => {
                         e.stopPropagation();
-                        remove(c.id);
+                        if (
+                          confirm(
+                            `Delete "${c.name}" and all ${c.photoCount} photo(s)? This cannot be undone.`,
+                          )
+                        ) {
+                          remove.mutate(c.id);
+                        }
                       }}
-                      className="press rounded-full p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                      className="press shrink-0 rounded-full p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
                     >
                       <Trash2 className="size-4" />
                     </button>
@@ -206,11 +201,11 @@ function Collections({ userId, isAdmin }: { userId: string; isAdmin: boolean }) 
         ) : (
           <EmptyState
             icon={<Layers className="size-7" strokeWidth={1.5} />}
-            title={isAdmin ? "No collections yet" : "Nothing shared yet"}
+            title="No collections yet"
             description={
               isAdmin
-                ? "Name your first collection above, then add the photos to it."
-                : "Check back once the organisers publish a collection."
+                ? "Create one above, then add the photos to it."
+                : "Nothing has been published yet. New collections will show up here."
             }
           />
         )}
@@ -219,34 +214,30 @@ function Collections({ userId, isAdmin }: { userId: string; isAdmin: boolean }) 
   );
 }
 
-/* ------------------------------ Admin view ------------------------------ */
+/* ------------------------------- Admin view ------------------------------- */
 
-function AdminCollection({
-  userId,
-  collectionId,
-  name,
-  description,
-}: {
-  userId: string;
-  collectionId: string;
-  name: string;
-  description?: string | null | undefined;
-}) {
+function AdminCollection({ collectionId, name }: { collectionId: string; name: string }) {
   const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<BulkProgress | null>(null);
   const [open, setOpen] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const photos = useQuery({
-    queryKey: ["shared-photos", collectionId],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("shared_photos")
-        .select("id, storage_path, file_name, width, height, faces_count")
-        .eq("collection_id", collectionId)
-        .order("created_at", { ascending: false });
-      return data ?? [];
+    queryKey: ["photos", collectionId],
+    queryFn: () => api.allPhotos(collectionId),
+    retry: false,
+  });
+
+  const removeSelected = useMutation({
+    mutationFn: (ids: string[]) => api.deletePhotos(collectionId, ids),
+    onSuccess: (r) => {
+      toast.success(`Deleted ${formatCount(r.deleted, "photo")}`);
+      setSelected(new Set());
+      qc.invalidateQueries({ queryKey: ["photos", collectionId] });
+      qc.invalidateQueries({ queryKey: ["collections"] });
     },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not delete those photos"),
   });
 
   async function upload(list: FileList | null) {
@@ -256,22 +247,20 @@ function AdminCollection({
       const r = await uploadPhotos({ collectionId, files, onProgress: setProgress });
       const added = r.processed - r.failed;
 
-      // Nothing added means every photo was refused for the same reason. Saying
-      // "added 0 photos" without it reads like success over an empty folder.
       if (added === 0) {
         toast.error(r.firstError ?? "No photos could be added");
         return;
       }
 
-      const saved = uploadSavings(r);
-      // Detected and indexed are different numbers. Reporting the first as if
-      // it were the second is how "7 faces indexed" appeared when none were.
+      // Detected and indexed are different numbers. Reporting the first as if it
+      // were the second is how "7 faces indexed" appeared when none were.
       const faceNote =
         r.faces === 0
           ? "no faces found"
           : r.indexed >= r.faces
             ? `${formatCount(r.faces, "face")} searchable`
             : `${formatCount(r.faces, "face")} found, ${r.indexed} searchable`;
+      const saved = uploadSavings(r);
       const savedNote = r.bytesIn > 0 && saved > 0 ? ` · saved ${saved}% storage` : "";
       const failedNote = r.failed > 0 ? ` · ${r.failed} failed` : "";
       toast.success(`Added ${formatCount(added, "photo")} · ${faceNote}${savedNote}${failedNote}`);
@@ -283,8 +272,8 @@ function AdminCollection({
             "index was unreachable so they are not findable yet. Nothing is lost.",
         );
       }
-      qc.invalidateQueries({ queryKey: ["shared-photos", collectionId] });
-      qc.invalidateQueries({ queryKey: ["shared-collections"] });
+      qc.invalidateQueries({ queryKey: ["photos", collectionId] });
+      qc.invalidateQueries({ queryKey: ["collections"] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Upload failed");
     } finally {
@@ -293,16 +282,14 @@ function AdminCollection({
   }
 
   const list = photos.data ?? [];
+  const grid: GridPhoto[] = list.map(toGridPhoto);
 
   return (
     <>
       <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-3xl font-semibold tracking-[-0.03em]">{name}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {formatCount(list.length, "photo")}
-            {description ? ` · ${description}` : ""}
-          </p>
+          <p className="mt-1 text-sm text-muted-foreground">{formatCount(list.length, "photo")}</p>
         </div>
         <input
           ref={inputRef}
@@ -315,10 +302,44 @@ function AdminCollection({
             e.target.value = "";
           }}
         />
-        <GlassButton icon={<ImagePlus className="size-4" />} onClick={() => inputRef.current?.click()} disabled={!!progress}>
+        <GlassButton
+          icon={<ImagePlus className="size-4" />}
+          onClick={() => inputRef.current?.click()}
+          disabled={!!progress}
+        >
           Add photos
         </GlassButton>
       </div>
+
+      {/* Appears only with a selection, so the default view stays uncluttered. */}
+      {selected.size > 0 && (
+        <div className="glass-chrome rise-in sticky top-3 z-10 mb-4 flex items-center justify-between gap-3 rounded-2xl border px-4 py-3">
+          <span className="text-sm font-medium">{formatCount(selected.size, "photo")} selected</span>
+          <div className="flex items-center gap-2">
+            <GlassButton
+              variant="ghost"
+              size="sm"
+              icon={<X className="size-4" />}
+              onClick={() => setSelected(new Set())}
+            >
+              Clear
+            </GlassButton>
+            <GlassButton
+              variant="danger"
+              size="sm"
+              icon={<Trash2 className="size-4" />}
+              loading={removeSelected.isPending}
+              onClick={() => {
+                if (confirm(`Delete ${selected.size} photo(s)? This cannot be undone.`)) {
+                  removeSelected.mutate([...selected]);
+                }
+              }}
+            >
+              Delete
+            </GlassButton>
+          </div>
+        </div>
+      )}
 
       {progress && (
         <div className="mb-6">
@@ -331,99 +352,75 @@ function AdminCollection({
       )}
 
       {photos.isLoading ? (
-        <Shimmer className="h-64" />
+        <PhotoGridSkeleton />
       ) : list.length === 0 && !progress ? (
         <EmptyState
           icon={<ImagePlus className="size-7" strokeWidth={1.5} />}
           title="No photos yet"
-          description="Add photos and every face in them is indexed, ready for member scans."
+          description="Add photos and every face in them will be indexed for member scans."
         />
       ) : (
-        <PhotoGrid photos={list} onOpen={setOpen} />
+        <PhotoGrid
+          photos={grid}
+          onOpen={setOpen}
+          selected={selected}
+          onToggleSelect={(id) =>
+            setSelected((prev) => {
+              const next = new Set(prev);
+              next.has(id) ? next.delete(id) : next.add(id);
+              return next;
+            })
+          }
+        />
       )}
-      {open !== null && <PhotoViewer photos={list} index={open} onIndexChange={setOpen} onClose={() => setOpen(null)} />}
+      {open !== null && (
+        <PhotoViewer photos={grid} index={open} onIndexChange={setOpen} onClose={() => setOpen(null)} />
+      )}
     </>
   );
 }
 
-/* ------------------------------ Member view ----------------------------- */
+/* ------------------------------ Member view ------------------------------- */
 
-function MemberCollection({
-  userId,
-  collectionId,
-  name,
-  description,
-}: {
-  userId: string;
-  collectionId: string;
-  name: string;
-  description?: string | null | undefined;
-}) {
+function MemberCollection({ collectionId, name }: { collectionId: string; name: string }) {
   const qc = useQueryClient();
-  const [progress, setProgress] = useState<ScanState | null>(null);
   const [open, setOpen] = useState<number | null>(null);
-  const [scanComplete, setScanComplete] = useState(false);
+  const [showPossible, setShowPossible] = useState(false);
+  const [scanning, setScanning] = useState(false);
 
-  const profile = useQuery({
-    queryKey: ["face-profile", userId],
-    queryFn: async () => {
-      const { data } = await supabase.from("face_profiles").select("id").eq("user_id", userId).maybeSingle();
-      return data ?? null;
-    },
-  });
-
-  const matches = useQuery({
-    queryKey: ["scan-results", userId, collectionId],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("scan_results")
-        .select("similarity, created_at, shared_photos(id, storage_path, file_name, width, height, faces_count)")
-        .eq("user_id", userId)
-        .eq("collection_id", collectionId)
-        .order("similarity", { ascending: false });
-      return (data ?? [])
-        .filter((r) => r.shared_photos)
-        .map((r) => ({ ...r.shared_photos!, best_similarity: r.similarity, scanned_at: r.created_at }));
-    },
+  const results = useQuery({
+    queryKey: ["scan", collectionId],
+    queryFn: () => api.cachedScan(collectionId),
+    retry: false,
   });
 
   async function scan() {
-    setScanComplete(false);
-    setProgress({ processed: 0, total: 0, matches: 0, faces: 0, failed: 0 });
+    setScanning(true);
     try {
-      const r = await scanSharedCollection({ userId, collectionId, onProgress: setProgress });
-
-      if (!r.matched) {
-        toast.info("No confident matches in this collection");
-      } else {
-        // Say plainly when angles were recovered, because that is the part a
-        // member would otherwise assume was missing.
-        const extra = r.linkedFaces > 0 ? `, ${r.linkedFaces} at other angles` : "";
-        toast.success(`Found you in ${formatCount(r.matched, "photo")}${extra}`);
-      }
-
-      setScanComplete(true);
-      qc.invalidateQueries({ queryKey: ["scan-results", userId, collectionId] });
-      qc.invalidateQueries({ queryKey: ["my-shared-matches", userId] });
+      const r = await api.scan(collectionId);
+      qc.setQueryData(["scan", collectionId], r);
+      toast.success(
+        r.hits.length
+          ? `Found you in ${formatCount(r.hits.length, "photo")}` +
+              (r.possible.length ? `, plus ${r.possible.length} to check` : "")
+          : "No confident matches in this collection",
+      );
     } catch (e) {
-      if (e instanceof NoFaceProfileError) {
-        toast.error(e.message);
+      if (e instanceof ApiError && e.code === "no-face") {
+        toast.error("Add a reference photo of yourself first, from the Home tab.");
       } else {
-        toast.error(
-          e instanceof Error
-            ? e.message
-            : typeof e === "object" && e && "message" in e
-              ? String((e as { message: unknown }).message)
-              : "Scan failed",
-        );
+        toast.error(e instanceof Error ? e.message : "Scan failed");
       }
     } finally {
-      setProgress(null);
+      setScanning(false);
     }
   }
 
-  const hasScanned = scanComplete || (matches.data?.length ?? 0) > 0;
-  const list = matches.data ?? [];
+  const hits = results.data?.hits ?? [];
+  const possible = results.data?.possible ?? [];
+  const shown: ScanHit[] = showPossible ? [...hits, ...possible] : hits;
+  const grid: GridPhoto[] = shown.map(toGridHit);
+  const hasScanned = (results.data?.scannedAt ?? 0) > 0;
 
   return (
     <>
@@ -431,39 +428,82 @@ function MemberCollection({
         <div>
           <h1 className="text-3xl font-semibold tracking-[-0.03em]">{name}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {hasScanned ? `${formatCount(list.length, "photo")} of you` : "Not scanned yet"}
-            {description ? ` · ${description}` : ""}
+            {hasScanned ? `${formatCount(hits.length, "photo")} of you` : "Not scanned yet"}
           </p>
         </div>
-        {profile.data ? (
-          <GlassButton icon={<ScanFace className="size-4" />} loading={!!progress} onClick={scan}>
-            {progress ? "Scanning…" : hasScanned ? "Scan again" : "Find me"}
-          </GlassButton>
-        ) : (
-          <Link to="/home">
-            <GlassButton icon={<ScanFace className="size-4" />}>Add your face to scan</GlassButton>
-          </Link>
-        )}
+        <GlassButton icon={<ScanFace className="size-4" />} loading={scanning} onClick={scan}>
+          {hasScanned ? "Scan again" : "Find me"}
+        </GlassButton>
       </div>
 
-      {progress ? (
-        <ScanProgress progress={progress} />
-      ) : matches.isLoading ? (
-        <Shimmer className="h-64" />
-      ) : list.length === 0 ? (
+      {scanning && (
+        <div className="mb-6">
+          <ScanProgress
+            progress={{ processed: 0, total: 1, faces: 0, failed: 0 }}
+            title="Looking for you"
+            subtitle="Comparing against every face in this collection, including turned-away views"
+          />
+        </div>
+      )}
+
+      {results.isLoading ? (
+        <PhotoGridSkeleton />
+      ) : !hasScanned ? (
         <EmptyState
           icon={<ScanFace className="size-7" strokeWidth={1.5} />}
-          title={hasScanned ? "No photos of you here" : "Ready when you are"}
-          description={
-            profile.data
-              ? "Tap “Find me” — only photos that confidently match your reference face will appear."
-              : "Add a reference photo of yourself on Home first — it's analysed privately on your device."
-          }
+          title="Find yourself in this collection"
+          description="We compare against your reference face on your device. Only the photos you appear in are shown."
+        />
+      ) : hits.length === 0 && possible.length === 0 ? (
+        <EmptyState
+          icon={<ScanFace className="size-7" strokeWidth={1.5} />}
+          title="No matches here"
+          description="You do not appear in this collection, or the photos of you are too small or turned too far away to recognise."
         />
       ) : (
-        <PhotoGrid photos={list} onOpen={setOpen} />
+        <>
+          {possible.length > 0 && (
+            <button
+              onClick={() => setShowPossible((v) => !v)}
+              className="press mb-4 inline-flex items-center gap-2 rounded-full border border-hairline px-4 py-2 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {showPossible ? "Hide" : "Show"} {possible.length} possible match
+              {possible.length === 1 ? "" : "es"}
+              <span className="text-xs">
+                {showPossible ? "" : "· less certain, worth a look"}
+              </span>
+            </button>
+          )}
+          <PhotoGrid photos={grid} onOpen={setOpen} showConfidence />
+        </>
       )}
-      {open !== null && <PhotoViewer photos={list} index={open} onIndexChange={setOpen} onClose={() => setOpen(null)} />}
+
+      {open !== null && (
+        <PhotoViewer photos={grid} index={open} onIndexChange={setOpen} onClose={() => setOpen(null)} />
+      )}
     </>
   );
 }
+
+/* --------------------------------- shared --------------------------------- */
+
+const toGridPhoto = (p: Photo): GridPhoto => ({
+  id: p.id,
+  thumbUrl: p.thumbUrl,
+  fullUrl: p.fullUrl,
+  width: p.width,
+  height: p.height,
+  fileName: p.fileName,
+});
+
+const toGridHit = (h: ScanHit): GridPhoto => ({
+  id: h.photoId,
+  thumbUrl: h.thumbUrl,
+  fullUrl: h.fullUrl,
+  width: h.width,
+  height: h.height,
+  fileName: h.fileName,
+  confidence: h.confidence,
+});
+
+export { confidencePercent };

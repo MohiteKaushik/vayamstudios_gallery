@@ -25,7 +25,15 @@
   "r2_buckets": [
     {
       "binding": "PHOTOS",
-      "bucket_name": "vayam-photos"
+      "bucket_name": "vayam-photos",
+      // Local development talks to the real bucket. Without this, "vite dev"
+      // writes to an emulated bucket under .wrangler, so photos uploaded while
+      // developing never appear in the Cloudflare dashboard and the app looks
+      // broken when it is working perfectly against the wrong store.
+      //
+      // The cost is that development uses real storage and real operations.
+      // That is the right trade here: one store, one truth.
+      "remote": true
     }
   ],
 
