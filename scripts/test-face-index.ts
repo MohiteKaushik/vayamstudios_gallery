@@ -36,6 +36,7 @@ import {
   DEFAULT_ROUNDS,
   GET_BY_IDS_LIMIT,
   UPSERT_LIMIT,
+  getByIdsBatched,
   LINK_MAX_DISTANCE,
   shardFor,
   indexPhotoFaces,
@@ -385,11 +386,16 @@ let poseResult: {
     idx.stats().maxGetByIds <= GET_BY_IDS_LIMIT,
     `largest call carried ${idx.stats().maxGetByIds} ids, limit ${GET_BY_IDS_LIMIT}`,
   );
+  // Tested directly rather than relying on the frontier happening to exceed the
+  // limit, so the chunking stays covered whatever the tuning settings become.
+  const many = [...idx.store.values()].flat().slice(0, GET_BY_IDS_LIMIT * 2 + 5).map((v) => v.id);
+  const fetched = await getByIdsBatched(idx as never, many);
   check(
-    "the frontier is genuinely larger than that limit",
-    MAX_FRONTIER > GET_BY_IDS_LIMIT,
-    `frontier ${MAX_FRONTIER} vs limit ${GET_BY_IDS_LIMIT}, so chunking is actually exercised`,
+    "getByIdsBatched handles more ids than one call allows",
+    fetched.length === many.length,
+    `asked for ${many.length}, got ${fetched.length}, in chunks of ${GET_BY_IDS_LIMIT}`,
   );
+  check("an empty id list makes no call at all", (await getByIdsBatched(idx as never, [])).length === 0);
 }
 
 // ===========================================================================

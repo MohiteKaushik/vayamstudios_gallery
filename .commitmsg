@@ -1,0 +1,43 @@
+Say what is actually true when a scan finds nothing, and cut the query budget
+
+WHY "STILL INDEXING" NEVER CLEARED
+
+The check was photoCount > 0 && seedFaces == 0, which is also true when a
+member simply is not in the photos, and when faces were never indexed at
+all. Three very different situations, one message, and it never went away.
+
+Scans now read the face records in R2 and report which case it is: empty,
+not-processed, no-faces, indexing, or no-match. Each has a different answer
+and a different person who can act on it. Your "test" collection turns out
+to be fully indexed, 72 faces across 17 photos, 0 pending, so the honest
+verdict there is no-match, not indexing.
+
+NEW OPERATOR TOOLS
+
+  GET  /api/collections/{c}/status    photos, processed, withFaces, indexed, pending
+  POST /api/collections/{c}/reindex   rebuilds the index from the descriptors in R2
+  POST /api/collections/{c}/selftest  takes an indexed face, searches with it, and
+                                      checks it finds its own photo
+
+The self-test matters most: it separates "the search is broken" from "this
+person is not in these photos", which are indistinguishable from outside and
+which is exactly where we were stuck.
+
+MEMBERS CAN BROWSE THE WHOLE COLLECTION
+
+Previously a member saw only their own matches, so an empty scan looked like
+an empty collection. There is now a Browse all control, and the empty state
+offers it.
+
+QUERY BUDGET
+
+Measured against the live service rather than the mock, a scan was issuing
+roughly 640 queries, taking 44 seconds and pushing Vectorize into returning
+500s. Rounds and frontier are reduced to bring that to about 148.
+
+Dropping the shard count to 1 was tried and reverted: it made each probe one
+query but took overall recall from 100 percent to 72 and profile recall from
+100 to 23, because the seed round then truncates. The seed is only
+SHARD_COUNT queries in total, so it was never the expensive part.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>

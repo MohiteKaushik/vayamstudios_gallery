@@ -51,7 +51,7 @@ import {
 } from "./auth/session.ts";
 import { hashPassword } from "./auth/password.ts";
 import { validateSignUp } from "./members.ts";
-import { searchCollection } from "./face-index.server.ts";
+import { searchCollection, indexPhotoFaces } from "./face-index.server.ts";
 import { MATCH_MAX_DISTANCE } from "./face.ts";
 import type { R2Bucket } from "./storage.server.ts";
 
@@ -94,11 +94,19 @@ export type ScanRecord = {
    */
   orphaned?: number;
   /**
-   * True when the collection holds photos that the search index has not caught
-   * up with. Vectorize applies writes asynchronously, so a scan run moments
-   * after an upload genuinely cannot see those faces yet.
+   * Why the result looks the way it does, so the interface can say something
+   * true rather than defaulting to "no matches" for every empty outcome.
+   *
+   *   ok             matches were found
+   *   empty          the collection has no photos
+   *   not-processed  photos exist but were never run through detection
+   *   no-faces       photos were processed and contain no faces at all
+   *   indexing       faces exist but have not reached the search index yet
+   *   no-match       everything is indexed; this member is not in these photos
    */
-  indexLagging?: boolean;
+  state: "ok" | "empty" | "not-processed" | "no-faces" | "indexing" | "no-match";
+  /** Counts behind that verdict, so an operator can act on it. */
+  index?: CollectionStatus;
 };
 
 const collectionKey = (cid: string) => `meta/collection/${cid}`;
@@ -255,6 +263,17 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
     if (!isSafeId(cid)) return json({ error: "Unknown collection" }, 400);
     if (rest[1] === "photos" && request.method === "GET") {
       return listPhotos(env, cid, url.searchParams.get("cursor"));
+    }
+    if (rest[1] === "status" && request.method === "GET") {
+      return json(await collectionStatus(env, cid));
+    }
+    if (rest[1] === "reindex" && request.method === "POST") {
+      if (!isAdmin) return json({ error: "Admins only" }, 403);
+      return reindexCollection(env, cid);
+    }
+    if (rest[1] === "selftest" && request.method === "POST") {
+      if (!isAdmin) return json({ error: "Admins only" }, 403);
+      return selfTest(env, cid);
     }
     return json({ error: "Not found" }, 404);
   }
@@ -610,6 +629,176 @@ async function listMembers(env: MediaEnv): Promise<Response> {
   return json({ members });
 }
 
+/* ----------------------------- index status ------------------------------- */
+
+export type CollectionStatus = {
+  photos: number;
+  /** Photos we have detection results for, whether or not a face was found. */
+  processed: number;
+  /** Photos that actually contain at least one face. */
+  withFaces: number;
+  /** Faces detected across the collection. */
+  faces: number;
+  /** Photos whose faces are confirmed live in the search index. */
+  indexed: number;
+  /** Photos with faces that are not in the index yet. */
+  pending: number;
+};
+
+/**
+ * The truth about a collection, read from the face records in R2.
+ *
+ * This exists because "the search found nothing" has several very different
+ * causes and they need different answers: photos never detected, faces
+ * detected but never indexed, the index still catching up, or the member
+ * genuinely not being there. Guessing between them produced a "still indexing"
+ * message that never went away.
+ */
+async function collectionStatus(env: MediaEnv, cid: string): Promise<CollectionStatus> {
+  const photoKeys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.PHOTOS.list({ prefix: `meta/photo/${cid}/`, cursor, limit: 1000 });
+    for (const o of page.objects) photoKeys.push(o.key);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+
+  const faceKeys: string[] = [];
+  cursor = undefined;
+  do {
+    const page = await env.PHOTOS.list({ prefix: `meta/faces/${cid}/`, cursor, limit: 1000 });
+    for (const o of page.objects) faceKeys.push(o.key);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+
+  const records = await mapLimit(faceKeys, READ_CONCURRENCY, (k) =>
+    readJson<{ indexedAt: number | null; faces: unknown[] }>(env.PHOTOS, k),
+  );
+
+  let withFaces = 0;
+  let faces = 0;
+  let indexed = 0;
+  for (const r of records) {
+    if (!r) continue;
+    const count = r.faces?.length ?? 0;
+    if (count === 0) continue;
+    withFaces++;
+    faces += count;
+    if (r.indexedAt) indexed++;
+  }
+
+  return {
+    photos: photoKeys.length,
+    processed: records.filter((r) => r !== null).length,
+    withFaces,
+    faces,
+    indexed,
+    pending: withFaces - indexed,
+  };
+}
+
+/**
+ * Rebuilds the search index for a collection from the descriptors in R2.
+ *
+ * This is what makes R2 the record and the index merely derived. Photos
+ * uploaded while the index was unreachable, or before indexing existed at all,
+ * are recoverable without re-uploading or re-detecting anything: the expensive
+ * work was detection, and that was kept.
+ */
+async function reindexCollection(env: MediaEnv, cid: string): Promise<Response> {
+  if (!env.FACE_INDEX) return json({ error: "The face index is unavailable" }, 503);
+
+  const keys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.PHOTOS.list({ prefix: `meta/faces/${cid}/`, cursor, limit: 1000 });
+    for (const o of page.objects) keys.push(o.key);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+
+  let photos = 0;
+  let vectors = 0;
+
+  // Sequential batches: this can touch a whole event, and hammering the index
+  // in parallel buys nothing when the writes are applied asynchronously anyway.
+  for (let i = 0; i < keys.length; i += 25) {
+    const batch = keys.slice(i, i + 25);
+    const records = await mapLimit(batch, 25, async (key) => ({
+      photoId: key.slice(`meta/faces/${cid}/`.length),
+      record: await readJson<{ faces: { descriptor: number[] }[] }>(env.PHOTOS, key),
+      key,
+    }));
+
+    for (const { photoId, record, key } of records) {
+      const descriptors = (record?.faces ?? [])
+        .map((f) => f.descriptor)
+        .filter((d) => Array.isArray(d) && d.length === 128);
+      if (descriptors.length === 0) continue;
+
+      const result = await indexPhotoFaces(env.FACE_INDEX, {
+        collectionId: cid,
+        photoId,
+        descriptors,
+      });
+      vectors += result.indexed;
+      photos++;
+
+      await writeJson(env.PHOTOS, key, { ...record, indexedAt: Date.now() });
+    }
+  }
+
+  return json({ photos, vectors, note: "Indexing is applied asynchronously; allow a minute." });
+}
+
+/**
+ * Proves the search works, using this collection's own faces.
+ *
+ * Takes a face that is already indexed, searches with it as if it were a
+ * member's reference, and checks that its own photo comes back. If it does,
+ * detection, indexing and searching are all sound and any "no match" is a real
+ * answer about that person. If it does not, the fault is in the pipeline and
+ * the member is being told something false.
+ *
+ * Without this, the two are indistinguishable from the outside, which is
+ * exactly the position we were in.
+ */
+async function selfTest(env: MediaEnv, cid: string): Promise<Response> {
+  if (!env.FACE_INDEX) return json({ error: "The face index is unavailable" }, 503);
+
+  const page = await env.PHOTOS.list({ prefix: `meta/faces/${cid}/`, limit: 50 });
+  let chosen: { photoId: string; descriptor: number[] } | null = null;
+
+  for (const o of page.objects) {
+    const record = await readJson<{ faces: { descriptor: number[] }[] }>(env.PHOTOS, o.key);
+    const descriptor = record?.faces?.[0]?.descriptor;
+    if (Array.isArray(descriptor) && descriptor.length === 128) {
+      chosen = { photoId: o.key.slice(`meta/faces/${cid}/`.length), descriptor };
+      break;
+    }
+  }
+  if (!chosen) return json({ ok: false, reason: "No indexed faces to test with" });
+
+  const outcome = await searchCollection(env.FACE_INDEX, {
+    collectionId: cid,
+    references: [chosen.descriptor],
+    threshold: MATCH_MAX_DISTANCE,
+  });
+
+  const foundItself = outcome.matches.some((m) => m.photoId === chosen!.photoId);
+
+  return json({
+    ok: foundItself,
+    testedPhoto: chosen.photoId,
+    foundItself,
+    totalMatches: outcome.matches.length,
+    seedFaces: outcome.stats.seedFaces,
+    linkedFaces: outcome.stats.linkedFaces,
+    verdict: foundItself
+      ? "Search is working. A face already in this collection finds its own photo."
+      : "Search is NOT working: a face taken straight from the index cannot find itself.",
+  });
+}
+
 /* ------------------------------ face profile ------------------------------ */
 
 /**
@@ -732,11 +921,23 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
   hits.sort((a, b) => b.confidence - a.confidence);
   possible.sort((a, b) => b.confidence - a.confidence);
 
-  // Vectorize applies writes asynchronously, so a collection can hold photos
-  // whose faces are not searchable yet. Saying "no matches" then is wrong and
-  // sends people away; saying "still indexing" tells them to try again.
-  const photoCount = await countPhotos(env.PHOTOS, cid);
-  const indexLagging = photoCount > 0 && outcome.stats.seedFaces === 0;
+  // "The search found nothing" has several causes and they need different
+  // answers. Guessing from photo count alone produced a "still indexing"
+  // message that never cleared, because a collection whose faces were never
+  // indexed looks identical to one the index has not caught up with.
+  //
+  // The face records in R2 tell them apart: how many photos were detected, how
+  // many hold a face, and how many of those reached the index.
+  const status = await collectionStatus(env, cid);
+  const foundNothing = outcome.stats.seedFaces === 0;
+
+  const state: ScanRecord["state"] =
+    !foundNothing ? "ok"
+    : status.photos === 0 ? "empty"
+    : status.processed === 0 ? "not-processed"
+    : status.withFaces === 0 ? "no-faces"
+    : status.pending > 0 ? "indexing"
+    : "no-match";
 
   const record: ScanRecord = {
     userId,
@@ -745,8 +946,9 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
     possible,
     scannedAt: Date.now(),
     facesSearched: outcome.stats.seedFaces + outcome.stats.linkedFaces,
+    state,
+    index: status,
     ...(orphaned > 0 ? { orphaned } : {}),
-    ...(indexLagging ? { indexLagging: true } : {}),
   };
   await writeJson(env.PHOTOS, scanKey(userId, cid), record);
   return json(record);

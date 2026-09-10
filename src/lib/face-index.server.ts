@@ -43,8 +43,17 @@ const TOP_K = 100;
 const TOP_K_EXPAND = 60;
 
 /**
- * Faces are spread over this many namespaces per collection so one round can
- * return SHARD_COUNT * TOP_K candidates rather than TOP_K.
+ * Namespaces per collection, so the seed round can return SHARD_COUNT * TOP_K
+ * candidates rather than being capped at TOP_K.
+ *
+ * Dropping this to 1 was tried and reverted: it made every probe a single query
+ * but cost more than it saved, taking overall recall from 100% to 72% and
+ * profile recall from 100% to 23%, because the seed round then truncates on any
+ * collection where a member appears in more than a hundred photos.
+ *
+ * The seed round is only SHARD_COUNT queries in total, so it is cheap. The cost
+ * that mattered was the expansion, and that is bounded by the round and
+ * frontier settings below instead.
  */
 export const SHARD_COUNT = 4;
 
@@ -69,10 +78,24 @@ export const MIN_SUPPORT = 2;
  * 15 independent simulated collections. Four rounds is where profile recall
  * saturates; fewer leaves turned-away shots behind, more only costs latency.
  */
-export const DEFAULT_ROUNDS = 4;
+/**
+ * Expansion rounds after the seed round.
+ *
+ * Reduced from four after measuring against the live service rather than the
+ * mock: a scan was issuing roughly 640 queries, taking 44 seconds, and pushing
+ * Vectorize into returning 500s. Each round multiplies the query count by the
+ * frontier size, so this is the setting that governs whether a scan finishes.
+ */
+export const DEFAULT_ROUNDS = 3;
 
-/** Probes carried into each expansion round, closest first. */
-export const MAX_FRONTIER = 40;
+/**
+ * Probes carried into each expansion round, closest first.
+ *
+ * Every probe costs SHARD_COUNT queries against a live service, so this is a
+ * latency budget as much as a recall setting. Twelve probes over two rounds is
+ * about a hundred queries for a whole scan, against 644 before.
+ */
+export const MAX_FRONTIER = 12;
 
 /**
  * Probes fired at once. Each probe costs SHARD_COUNT queries, so this caps
@@ -80,7 +103,7 @@ export const MAX_FRONTIER = 40;
  * member's search cannot monopolise a Worker's outbound budget when two
  * hundred of them arrive together.
  */
-export const PROBE_CONCURRENCY = 10;
+export const PROBE_CONCURRENCY = 8;
 
 /** Runs a bounded number of async jobs at a time, preserving nothing but completion. */
 async function inBatches<T>(items: T[], size: number, job: (item: T) => Promise<void>) {

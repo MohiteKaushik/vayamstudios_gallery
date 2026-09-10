@@ -49,8 +49,18 @@ export type ScanResult = {
   facesSearched: number;
   /** Matches that could not be shown because their photo record was missing. */
   orphaned?: number;
-  /** The index has not caught up with this collection yet. Try again shortly. */
-  indexLagging?: boolean;
+  /** Why the result looks the way it does. See CollectionStatus for the counts. */
+  state?: "ok" | "empty" | "not-processed" | "no-faces" | "indexing" | "no-match";
+  index?: CollectionStatus;
+};
+
+export type CollectionStatus = {
+  photos: number;
+  processed: number;
+  withFaces: number;
+  faces: number;
+  indexed: number;
+  pending: number;
 };
 
 export class ApiError extends Error {
@@ -134,6 +144,16 @@ export const api = {
     }),
 
   cachedScan: (collectionId: string) => call<ScanResult>(`/api/scan/${collectionId}`),
+
+  collectionStatus: (collectionId: string) =>
+    call<CollectionStatus>(`/api/collections/${collectionId}/status`),
+
+  /** Rebuilds the search index for a collection from the descriptors in R2. */
+  reindex: (collectionId: string) =>
+    call<{ photos: number; vectors: number }>(`/api/collections/${collectionId}/reindex`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
 
   forgetFace: () =>
     call<{ ok: true; clearedScans: number }>("/api/face-profile", { method: "DELETE" }),

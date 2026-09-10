@@ -10,7 +10,7 @@ import { PhotoViewer } from "@/components/PhotoViewer";
 import { EmptyState, GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
 import { useRequireAuth } from "@/lib/auth-gate";
 import { formatCount } from "@/lib/images";
-import { api, ApiError, confidencePercent, type Photo, type ScanHit } from "@/lib/api";
+import { api, ApiError, confidencePercent, type Photo, type ScanHit, type ScanResult } from "@/lib/api";
 import { uploadPhotos, uploadSavings, type BulkProgress } from "@/lib/upload";
 import { useIsAdmin } from "@/lib/roles";
 
@@ -387,6 +387,16 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
   const [open, setOpen] = useState<number | null>(null);
   const [showPossible, setShowPossible] = useState(false);
   const [scanning, setScanning] = useState(false);
+  // Members asked to see the whole collection, not only their own matches.
+  // Fetched lazily, because for most people the matches are the point.
+  const [browseAll, setBrowseAll] = useState(false);
+
+  const allPhotos = useQuery({
+    queryKey: ["photos", collectionId],
+    queryFn: () => api.allPhotos(collectionId),
+    enabled: browseAll,
+    retry: false,
+  });
 
   const results = useQuery({
     queryKey: ["scan", collectionId],
@@ -402,8 +412,8 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
       // A lagging index is not the same as no matches, and telling someone
       // they are not in the photos when the index simply has not caught up
       // sends them away for good.
-      if (r.indexLagging) {
-        toast.info("These photos are still being indexed. Try again in a minute.");
+      if (r.hits.length === 0 && r.state && r.state !== "no-match") {
+        toast.info(explainEmpty(r));
       } else if (r.hits.length) {
         toast.success(
           `Found you in ${formatCount(r.hits.length, "photo")}` +
@@ -423,6 +433,38 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
     }
   }
 
+  if (browseAll) {
+    const everything: GridPhoto[] = (allPhotos.data ?? []).map(toGridPhoto);
+    return (
+      <>
+        <button
+          onClick={() => setBrowseAll(false)}
+          className="press mb-5 inline-flex items-center gap-1 rounded-full text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ChevronLeft className="size-4" /> Back to your photos
+        </button>
+        <h1 className="text-3xl font-semibold tracking-[-0.03em]">{name}</h1>
+        <p className="mb-6 mt-1 text-sm text-muted-foreground">
+          Every photo in this collection, {formatCount(everything.length, "photo")}
+        </p>
+        {allPhotos.isLoading ? (
+          <PhotoGridSkeleton />
+        ) : everything.length === 0 ? (
+          <EmptyState
+            icon={<Layers className="size-7" strokeWidth={1.5} />}
+            title="Nothing here yet"
+            description="This collection has no photos in it."
+          />
+        ) : (
+          <PhotoGrid photos={everything} onOpen={setOpen} />
+        )}
+        {open !== null && (
+          <PhotoViewer photos={everything} index={open} onIndexChange={setOpen} onClose={() => setOpen(null)} />
+        )}
+      </>
+    );
+  }
+
   const hits = results.data?.hits ?? [];
   const possible = results.data?.possible ?? [];
   const shown: ScanHit[] = showPossible ? [...hits, ...possible] : hits;
@@ -438,9 +480,14 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
             {hasScanned ? `${formatCount(hits.length, "photo")} of you` : "Not scanned yet"}
           </p>
         </div>
-        <GlassButton icon={<ScanFace className="size-4" />} loading={scanning} onClick={scan}>
-          {hasScanned ? "Scan again" : "Find me"}
-        </GlassButton>
+        <div className="flex items-center gap-2">
+          <GlassButton variant="quiet" icon={<Layers className="size-4" />} onClick={() => setBrowseAll(true)}>
+            Browse all
+          </GlassButton>
+          <GlassButton icon={<ScanFace className="size-4" />} loading={scanning} onClick={scan}>
+            {hasScanned ? "Scan again" : "Find me"}
+          </GlassButton>
+        </div>
       </div>
 
       {scanning && (
@@ -464,11 +511,12 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
       ) : hits.length === 0 && possible.length === 0 ? (
         <EmptyState
           icon={<ScanFace className="size-7" strokeWidth={1.5} />}
-          title={results.data?.indexLagging ? "Still indexing" : "No matches here"}
-          description={
-            results.data?.indexLagging
-              ? "These photos were added recently and are still being prepared for search. Try again in a minute."
-              : "You do not appear in this collection, or the photos of you are too small or turned too far away to recognise."
+          title={emptyTitle(results.data)}
+          description={results.data ? explainEmpty(results.data) : ""}
+          action={
+            <GlassButton variant="quiet" icon={<Layers className="size-4" />} onClick={() => setBrowseAll(true)}>
+              Browse all photos
+            </GlassButton>
           }
         />
       ) : (
@@ -494,6 +542,48 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
       )}
     </>
   );
+}
+
+/* ------------------------- explaining an empty result ---------------------- */
+
+/**
+ * Says what actually happened.
+ *
+ * Every empty outcome used to read as "no matches", which is wrong in four of
+ * the five cases and sends a member away believing they are not in the photos.
+ * The server now reports which case it is, and each one has a different answer
+ * and a different person who can act on it.
+ */
+function emptyTitle(r: ScanResult | undefined): string {
+  switch (r?.state) {
+    case "empty":
+      return "Nothing here yet";
+    case "not-processed":
+    case "indexing":
+      return "Still being prepared";
+    case "no-faces":
+      return "No faces in these photos";
+    default:
+      return "No matches here";
+  }
+}
+
+function explainEmpty(r: ScanResult): string {
+  const n = r.index;
+  switch (r.state) {
+    case "empty":
+      return "This collection has no photos in it yet.";
+    case "not-processed":
+      return "These photos have not been analysed for faces yet. Ask the team to re-index this collection.";
+    case "no-faces":
+      return "These photos were analysed and no faces were found in them, so there is nothing to match against.";
+    case "indexing":
+      return n
+        ? `${n.pending} of ${n.withFaces} photo(s) with faces are still being added to the search. Try again in a minute.`
+        : "These photos are still being prepared for search. Try again in a minute.";
+    default:
+      return "You do not appear in these photos, or the shots of you are too small or turned too far away to recognise.";
+  }
 }
 
 /* --------------------------------- shared --------------------------------- */
