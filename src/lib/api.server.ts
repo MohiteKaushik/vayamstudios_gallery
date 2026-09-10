@@ -87,6 +87,8 @@ export type ScanRecord = {
   possible: ScanHit[];
   scannedAt: number;
   facesSearched: number;
+  /** Where the scan spent its time, in milliseconds. Absent on records written before this was measured. */
+  timing?: { searchMs: number; readMs: number; statusMs: number; totalMs: number };
   /**
    * Matches whose photo record was missing, so they could not be shown.
    * Surfaced rather than swallowed: a scan that matches faces and displays
@@ -927,11 +929,18 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
   // would let strangers into the first round, and the expansion then walks
   // outward from a wrong face. Angles are recovered by the walk, not by
   // loosening the number.
+  // Timing is recorded rather than guessed at. The target is six seconds end to
+  // end, and when a scan misses it the answer is entirely different depending on
+  // whether the index lookups were slow or the photo records behind them were,
+  // so the two are measured apart.
+  const tSearch = Date.now();
   const outcome = await searchCollection(env.FACE_INDEX, {
     collectionId: cid,
     references: member.references,
     threshold: MATCH_MAX_DISTANCE,
   });
+  const searchMs = Date.now() - tSearch;
+  const tRead = Date.now();
 
   const decorated = await mapLimit(outcome.matches, READ_CONCURRENCY, async (m) => {
     const meta = await readJson<PhotoMeta>(env.PHOTOS, photoMetaKey(cid, m.photoId));
@@ -978,11 +987,20 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
   //
   // The face records in R2 tell them apart: how many photos were detected, how
   // many hold a face, and how many of those reached the index.
-  const status = await collectionStatus(env, cid);
+  const readMs = Date.now() - tRead;
   const foundNothing = outcome.stats.seedFaces === 0;
 
+  // collectionStatus lists and reads every face record in the collection, which
+  // measured between 0.9 and 1.4 seconds, about a third of a scan. It exists to
+  // explain an empty result, so a scan that found somebody does not need it and
+  // no longer waits for it. That is the difference between a scan at four
+  // seconds and one at two and a half, against a six second budget.
+  const tStatus = Date.now();
+  const status = foundNothing ? await collectionStatus(env, cid) : null;
+  const statusMs = Date.now() - tStatus;
+
   const state: ScanRecord["state"] =
-    !foundNothing ? "ok"
+    !status ? "ok"
     : status.photos === 0 ? "empty"
     : status.processed === 0 ? "not-processed"
     : status.withFaces === 0 ? "no-faces"
@@ -997,7 +1015,8 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
     scannedAt: Date.now(),
     facesSearched: outcome.stats.seedFaces + outcome.stats.linkedFaces,
     state,
-    index: status,
+    ...(status ? { index: status } : {}),
+    timing: { searchMs, readMs, statusMs, totalMs: searchMs + readMs + statusMs },
     ...(orphaned > 0 ? { orphaned } : {}),
   };
   await writeJson(env.PHOTOS, scanKey(userId, cid), record);
