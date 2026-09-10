@@ -1,43 +1,21 @@
-Say what is actually true when a scan finds nothing, and cut the query budget
+Point at the new public R2 URL, and document deployment
 
-WHY "STILL INDEXING" NEVER CLEARED
+The bucket moved to a new public address, so R2_PUBLIC_URL is updated in the
+Worker config and the local env.
 
-The check was photoCount > 0 && seedFaces == 0, which is also true when a
-member simply is not in the photos, and when faces were never indexed at
-all. Three very different situations, one message, and it never went away.
+DEPLOY.md covers the parts that are easy to get wrong:
 
-Scans now read the face records in R2 and report which case it is: empty,
-not-processed, no-faces, indexing, or no-match. Each has a different answer
-and a different person who can act on it. Your "test" collection turns out
-to be fully indexed, 72 faces across 17 photos, 0 pending, so the honest
-verdict there is no-match, not indexing.
-
-NEW OPERATOR TOOLS
-
-  GET  /api/collections/{c}/status    photos, processed, withFaces, indexed, pending
-  POST /api/collections/{c}/reindex   rebuilds the index from the descriptors in R2
-  POST /api/collections/{c}/selftest  takes an indexed face, searches with it, and
-                                      checks it finds its own photo
-
-The self-test matters most: it separates "the search is broken" from "this
-person is not in these photos", which are indistinguishable from outside and
-which is exactly where we were stuck.
-
-MEMBERS CAN BROWSE THE WHOLE COLLECTION
-
-Previously a member saw only their own matches, so an empty scan looked like
-an empty collection. There is now a Browse all control, and the empty state
-offers it.
-
-QUERY BUDGET
-
-Measured against the live service rather than the mock, a scan was issuing
-roughly 640 queries, taking 44 seconds and pushing Vectorize into returning
-500s. Rounds and frontier are reduced to bring that to about 148.
-
-Dropping the shard count to 1 was tried and reverted: it made each probe one
-query but took overall recall from 100 percent to 72 and profile recall from
-100 to 23, because the seed round then truncates. The seed is only
-SHARD_COUNT queries in total, so it was never the expensive part.
+- The three secrets, what each does, and that SESSION_SECRET is generated
+  rather than looked up. They are deliberately absent from the repository.
+- Deploying from a machine, and from a connected GitHub repository. The
+  Worker name has to match the name in wrangler.jsonc or the build fails,
+  and the root directory is the repository root.
+- What to check after the first deploy: collection status until pending
+  reaches zero, then the self-test, which proves the search works against
+  real photos rather than leaving "no match" ambiguous.
+- Why local development is slow and production is not, so performance is
+  never judged from the wrong environment.
+- That the bucket being public means direct r2.dev URLs bypass the session
+  check the app applies to /media paths.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>

@@ -57,7 +57,7 @@
   // Not secret. The public bucket is for assets that are safe without a
   // session; photos are served through the Worker behind a session check.
   "vars": {
-    "R2_PUBLIC_URL": "https://pub-caf4c5ddf0424d7a903e671fc2a45b86.r2.dev"
+    "R2_PUBLIC_URL": "https://pub-c3d241c9618b4d51a2a52d43f94f7a7d.r2.dev"
   }
 
   // Secrets are NOT listed here. Set them once per environment with:
