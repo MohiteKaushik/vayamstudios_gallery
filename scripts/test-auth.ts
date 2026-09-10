@@ -16,6 +16,7 @@ import {
   normaliseEmail,
   emailKey,
   DEFAULT_ITERATIONS,
+  MAX_WORKERS_ITERATIONS,
 } from "../src/lib/auth/password.ts";
 import {
   createSessionToken,
@@ -192,7 +193,23 @@ console.log("\n=== 11. reading the cookie back ===");
 }
 
 // ===========================================================================
-console.log("\n=== 12. what the real cost actually is ===");
+console.log("\n=== 12. the runtime ceiling ===");
+{
+  // These tests run on Node's WebCrypto, which has no iteration cap. The
+  // Workers runtime does, and refuses outright:
+  //   Pbkdf2 failed: iteration counts above 100000 are not supported
+  // A value above the cap therefore passes everything here and fails on the
+  // first real sign-in in production, which is exactly what happened. Assert
+  // it, because no other check in this file can catch it.
+  check(
+    "default cost is within what the Workers runtime accepts",
+    DEFAULT_ITERATIONS <= MAX_WORKERS_ITERATIONS,
+    `${DEFAULT_ITERATIONS.toLocaleString()} against a ceiling of ${MAX_WORKERS_ITERATIONS.toLocaleString()}`,
+  );
+  check("the ceiling is the documented one", MAX_WORKERS_ITERATIONS === 100_000);
+}
+
+console.log("\n=== 13. what the real cost actually is ===");
 {
   const t0 = Date.now();
   const stored = await hashPassword("a-realistic-password", DEFAULT_ITERATIONS);

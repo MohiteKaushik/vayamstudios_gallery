@@ -367,10 +367,27 @@ let poseResult: {
   };
 
   console.log("");
-  check("expansion finds more three-quarter shots", es.hit["three-quarter"]! > bs.hit["three-quarter"]!,
-    `${bs.hit["three-quarter"]} then ${es.hit["three-quarter"]} of ${totals["three-quarter"]}`);
-  check("expansion finds more profile shots", es.hit["profile"]! > bs.hit["profile"]!,
-    `${bs.hit["profile"]} then ${es.hit["profile"]} of ${totals["profile"]}`);
+  // This simulation is optimistic, and is known to be.
+  //
+  // Measured on the real collections, two different people's descriptors sit
+  // about 0.66 apart, with the widest pair in a whole collection at 0.90. This
+  // generator places different people at roughly 1.26, about twice that, so
+  // every threshold looks safer here than it is. Settings tuned against these
+  // numbers matched 52 of 53 faces in one real collection to a single person.
+  //
+  // So expansion gain is not asserted from this model any more: a figure
+  // produced here is not evidence about production, and treating it as though
+  // it were is what caused the over-matching. Recall printed above is an upper
+  // bound. What still holds regardless of the separation is that expansion must
+  // never lose ground and never cost precision, and those are asserted below.
+  //
+  // Recalibrating the generator to the measured spread is the real fix. Until
+  // that is done, tuning is validated against the collections themselves,
+  // through POST /api/collections/{id}/selftest, rather than against this file.
+  console.log(`    NOTE: different people are simulated 1.26 apart; real photographs measure 0.66. Recall above is an upper bound.`);
+  check("expansion never loses a turned-away shot the single query found",
+    es.hit["three-quarter"]! >= bs.hit["three-quarter"]! && es.hit["profile"]! >= bs.hit["profile"]!,
+    `three-quarter ${bs.hit["three-quarter"]} to ${es.hit["three-quarter"]}, profile ${bs.hit["profile"]} to ${es.hit["profile"]}`);
   check("expansion keeps precision above 98%", expHit / Math.max(1, expHit + es.wrong) > 0.98,
     pct(expHit, expHit + es.wrong));
   check("expansion does not lose anything the single query found", expHit >= baseHit);

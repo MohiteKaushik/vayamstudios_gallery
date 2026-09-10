@@ -16,8 +16,32 @@
  * everyone out.
  */
 
-/** OWASP's current guidance for PBKDF2-HMAC-SHA256. Raise it, never lower it. */
-export const DEFAULT_ITERATIONS = 600_000;
+/**
+ * The Workers runtime refuses more than this:
+ *
+ *   Pbkdf2 failed: iteration counts above 100000 are not supported
+ *   (requested 600000)
+ *
+ * Node has no such cap, so a higher value passes every test in this repository
+ * and then fails on the first real sign-in in production. Anything derived from
+ * this constant must stay at or below it.
+ */
+export const MAX_WORKERS_ITERATIONS = 100_000;
+
+/**
+ * Iterations used when hashing a new password.
+ *
+ * OWASP asks for 600,000 for PBKDF2-HMAC-SHA256 and the platform allows a sixth
+ * of that, so this sits at the ceiling rather than at the recommendation. Worth
+ * being straight about: that is weaker than the guidance against an attacker who
+ * has already stolen the stored hashes. Every hash still carries its own random
+ * 16-byte salt, so precomputed tables are useless and each password has to be
+ * attacked on its own.
+ *
+ * The stored format records its own cost, so if the runtime ever lifts the cap
+ * this can be raised and existing hashes upgrade quietly on the next sign-in.
+ */
+export const DEFAULT_ITERATIONS = MAX_WORKERS_ITERATIONS;
 
 const ALGORITHM = "pbkdf2-sha256";
 const SALT_BYTES = 16;

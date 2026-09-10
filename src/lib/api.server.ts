@@ -786,16 +786,66 @@ async function selfTest(env: MediaEnv, cid: string): Promise<Response> {
 
   const foundItself = outcome.matches.some((m) => m.photoId === chosen!.photoId);
 
+  // Finding itself is necessary but nowhere near sufficient. If every face in a
+  // collection sits within the match threshold of every other, the search
+  // "works" and is useless, because each member matches every photo. The
+  // distance spread between distinct faces is what tells the two apart, so it
+  // is measured here rather than inferred from match counts.
+  const sample: number[][] = [];
+  const page2 = await env.PHOTOS.list({ prefix: `meta/faces/${cid}/`, limit: 40 });
+  for (const o of page2.objects) {
+    const record = await readJson<{ faces: { descriptor: number[] }[] }>(env.PHOTOS, o.key);
+    for (const f of record?.faces ?? []) {
+      if (Array.isArray(f.descriptor) && f.descriptor.length === 128) sample.push(f.descriptor);
+    }
+    if (sample.length >= 40) break;
+  }
+
+  const distances: number[] = [];
+  for (let i = 0; i < sample.length; i++) {
+    for (let j = i + 1; j < sample.length; j++) {
+      let sum = 0;
+      for (let k = 0; k < 128; k++) sum += (sample[i]![k]! - sample[j]![k]!) ** 2;
+      distances.push(Math.sqrt(sum));
+    }
+  }
+  distances.sort((a, b) => a - b);
+
+  const at = (q: number) => distances[Math.floor(distances.length * q)] ?? 0;
+  const spread =
+    distances.length === 0
+      ? null
+      : {
+          pairs: distances.length,
+          min: +at(0).toFixed(3),
+          p25: +at(0.25).toFixed(3),
+          median: +at(0.5).toFixed(3),
+          p75: +at(0.75).toFixed(3),
+          max: +distances[distances.length - 1]!.toFixed(3),
+          /** Share of face pairs the threshold would call the same person. */
+          withinThreshold: +(
+            distances.filter((d) => d <= MATCH_MAX_DISTANCE).length / distances.length
+          ).toFixed(3),
+        };
+
+  // In a normal collection most pairs are different people and sit far apart,
+  // so only a small share fall inside the threshold. A high share means the
+  // embeddings are not discriminating and no threshold will save the search.
+  const healthy = spread === null || spread.withinThreshold < 0.25;
+
   return json({
-    ok: foundItself,
+    ok: foundItself && healthy,
     testedPhoto: chosen.photoId,
     foundItself,
     totalMatches: outcome.matches.length,
     seedFaces: outcome.stats.seedFaces,
     linkedFaces: outcome.stats.linkedFaces,
-    verdict: foundItself
-      ? "Search is working. A face already in this collection finds its own photo."
-      : "Search is NOT working: a face taken straight from the index cannot find itself.",
+    spread,
+    verdict: !foundItself
+      ? "Search is NOT working: a face taken straight from the index cannot find itself."
+      : healthy
+        ? "Search is working. Faces find themselves and distinct faces stay apart."
+        : "Faces are not distinguishable from each other: too many pairs fall inside the match threshold, so everyone will match everything.",
   });
 }
 

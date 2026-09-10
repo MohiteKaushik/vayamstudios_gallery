@@ -58,42 +58,61 @@ const TOP_K_EXPAND = 60;
 export const SHARD_COUNT = 4;
 
 /**
- * How close a candidate must be to an already-confirmed face to be linked to
- * it. Tighter than the seed threshold because error compounds along a chain.
+ * WHAT THESE FOUR SETTINGS ARE FOR, AND WHY THEY ARE CAUTIOUS
+ *
+ * The expansion walks a collection's own face graph: from faces already
+ * confirmed against the member's reference, it looks for their near neighbours,
+ * which is how a photograph showing only the side or the back of a head gets
+ * found when it is too far from the reference to match directly.
+ *
+ * The four settings below were originally tuned against the simulation in
+ * scripts/test-face-index.ts, which places two different people about 1.26
+ * apart. Real photographs are nothing like that far apart. Measured across two
+ * of the live collections, the distance between two distinct faces has a median
+ * of 0.66 and a maximum of 0.90, so an entire collection of strangers fits
+ * inside a band narrower than the simulation's gap between any two people.
+ *
+ * Chained hops of 0.46 through a band that narrow reach nearly everybody: one
+ * face matched 52 of the 53 in a collection, 29 of them directly. The settings
+ * are therefore now well inside the measured spread rather than calibrated to
+ * the model. Profile recall is lower than the simulation promised. That is the
+ * deliberate trade, because showing a member photographs of somebody else is
+ * the worse of the two failures.
  */
-export const LINK_MAX_DISTANCE = 0.46;
+
+/**
+ * How close a candidate must be to an already-confirmed face to be linked to it.
+ *
+ * Half the measured median gap between different people, and closer than a seed
+ * match needs to be, so a link is a stronger claim than a direct match rather
+ * than an equal one.
+ */
+export const LINK_MAX_DISTANCE = 0.34;
 
 /**
  * Hops beyond the first must be vouched for by this many distinct confirmed
- * faces. This is the guard that keeps a look-alike out. Relaxing the link
- * threshold to 0.50 with this guard in place still admitted genuine
- * doppelgangers in testing, which is why the link stays at 0.46.
+ * faces. This is the guard that keeps a look-alike out: one close neighbour can
+ * be a coincidence, three independent ones are much harder to be.
  */
-export const MIN_SUPPORT = 2;
+export const MIN_SUPPORT = 3;
 
 /**
  * Expansion rounds after the seed round.
  *
- * Chosen by sweeping rounds, frontier size, link threshold and support against
- * 15 independent simulated collections. Four rounds is where profile recall
- * saturates; fewer leaves turned-away shots behind, more only costs latency.
+ * The simulation saturated at four. Two things cut it to one. Against the live
+ * service a scan was issuing roughly 640 queries, taking 44 seconds and pushing
+ * Vectorize into 500s, and each round multiplies the query count by the frontier
+ * size. Then the distance measurements showed that additional rounds were not
+ * reaching further into the same person, they were reaching into other people.
  */
-/**
- * Expansion rounds after the seed round.
- *
- * Reduced from four after measuring against the live service rather than the
- * mock: a scan was issuing roughly 640 queries, taking 44 seconds, and pushing
- * Vectorize into returning 500s. Each round multiplies the query count by the
- * frontier size, so this is the setting that governs whether a scan finishes.
- */
-export const DEFAULT_ROUNDS = 3;
+export const DEFAULT_ROUNDS = 1;
 
 /**
- * Probes carried into each expansion round, closest first.
+ * Probes carried into the expansion round, closest first.
  *
  * Every probe costs SHARD_COUNT queries against a live service, so this is a
- * latency budget as much as a recall setting. Twelve probes over two rounds is
- * about a hundred queries for a whole scan, against 644 before.
+ * latency budget as much as a recall setting. Twelve probes in a single round is
+ * about 150 queries for a whole scan, against 644 before.
  */
 export const MAX_FRONTIER = 12;
 
