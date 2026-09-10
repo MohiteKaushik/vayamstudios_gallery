@@ -13,7 +13,7 @@ import {
   averageDescriptors,
   detectFaces,
 } from "./face";
-import { downscale, fileToImage, mirror } from "./images";
+import { canvasToBlob, downscale, fileToImage, mirror } from "./images";
 import { api } from "./api";
 
 export type EnrolResult = { error: string | null; references?: number };
@@ -59,8 +59,51 @@ export async function enrolFace(file: File): Promise<EnrolResult> {
 
   try {
     const saved = await api.saveFaceProfile(references.slice(0, MAX_REFERENCES));
+    // The crop is a convenience for the team, not part of enrolling, so a
+    // failure here must not cost the member their face profile.
+    await sendReferenceCrop(analysis.canvas, face.box).catch(() => undefined);
     return { error: null, references: saved.references };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Could not save your face profile" };
   }
+}
+
+/** Head and shoulders, roughly, around the detected box. */
+const CROP_MARGIN = 0.6;
+const CROP_EDGE = 320;
+
+/**
+ * Sends a small crop of the enrolled face for the operator console.
+ *
+ * The waiting list exists so the team can go and photograph whoever has not
+ * been photographed yet, and a name and a number do not let anyone find a
+ * person in a crowded room. This is the only photograph of a member the app
+ * stores, it is a head-and-shoulders square rather than their selfie, and it
+ * goes when they remove their face profile.
+ */
+async function sendReferenceCrop(
+  source: HTMLCanvasElement,
+  box: { x: number; y: number; width: number; height: number },
+): Promise<void> {
+  const margin = Math.max(box.width, box.height) * CROP_MARGIN;
+  const size = Math.max(box.width, box.height) + margin * 2;
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = CROP_EDGE;
+  canvas.height = CROP_EDGE;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.fillStyle = "#111";
+  ctx.fillRect(0, 0, CROP_EDGE, CROP_EDGE);
+  ctx.drawImage(source, cx - size / 2, cy - size / 2, size, size, 0, 0, CROP_EDGE, CROP_EDGE);
+
+  const blob = await canvasToBlob(canvas, 0.8);
+  await fetch("/media/face", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "image/jpeg" },
+    body: blob,
+  });
 }

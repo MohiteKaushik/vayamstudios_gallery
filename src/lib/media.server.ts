@@ -143,6 +143,7 @@ export async function handleMediaRequest(
   if (kind === "upload") return handleUpload(request, env, url);
   if (kind === "index") return handleIndex(request, env);
   if (kind === "delete") return handleDelete(request, env);
+  if (kind === "face") return handleFacePhoto(request, env, rest);
 
   // /media/p/{collection}/{photo} and /media/t/{collection}/{photo}
   if (kind !== "p" && kind !== "t") return null;
@@ -226,6 +227,75 @@ async function handleUpload(request: Request, env: MediaEnv, url: URL): Promise<
   }
 
   return json({ photoId, bytes: bytes.byteLength, url: mediaUrl(cid, photoId, "t") }, 201);
+}
+
+/* -------------------------------------------------------------------------- */
+/*                          The member's own reference                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A small crop of the face a member enrolled with.
+ *
+ * This is stored, and it is the one place a photograph of a member is. It was
+ * added because of what the console is for: the waiting list exists so the team
+ * can go and photograph the people who have not been photographed yet, and a
+ * name and a phone number do not let anyone pick a person out of a crowded
+ * room. A face does.
+ *
+ * It is deliberately small, roughly a 320 pixel square of head and shoulders
+ * rather than the selfie itself, and it is readable only by the member it
+ * belongs to and by an operator. It is deleted the moment the member removes
+ * their face profile.
+ *
+ * Everything the app says about this had to change with it. The sign-in screen
+ * used to promise that face data never leaves the device, and that is no longer
+ * true, so it no longer says it.
+ */
+export const facePhotoKey = (userId: string) => `meta/face-photo/${userId}`;
+
+/** The most a reference crop may be. A 320px JPEG is a small fraction of this. */
+const MAX_FACE_PHOTO_BYTES = 400_000;
+
+async function handleFacePhoto(
+  request: Request,
+  env: MediaEnv,
+  rest: string[],
+): Promise<Response> {
+  const userId = await currentUserId(request, env);
+  if (!userId) return json({ error: "Not signed in" }, 401);
+
+  if (request.method === "POST") {
+    const contentType = (request.headers.get("content-type") ?? "").split(";")[0]!.trim();
+    if (contentType !== "image/jpeg") return json({ error: "Send a JPEG" }, 415);
+
+    const bytes = await request.arrayBuffer();
+    if (bytes.byteLength === 0) return json({ error: "Empty upload" }, 400);
+    if (bytes.byteLength > MAX_FACE_PHOTO_BYTES) return json({ error: "That crop is too large" }, 413);
+
+    // A member may only ever write their own. The id is taken from the session,
+    // never from the request, so there is nothing to forge.
+    await env.PHOTOS.put(facePhotoKey(userId), bytes, {
+      httpMetadata: { contentType: "image/jpeg", cacheControl: "private, max-age=300" },
+    });
+    return json({ ok: true }, 201);
+  }
+
+  if (request.method === "GET") {
+    const wanted = rest[0] ?? userId;
+    if (!isSafeId(wanted)) return new Response("Not found", { status: 404 });
+
+    // Your own, always. Anyone else's, only an operator, because this is the
+    // one route in the app that hands over a photograph of a person's face.
+    if (wanted !== userId) {
+      const member = await getMemberById(env.PHOTOS, userId);
+      if (!member || member.role !== "admin") {
+        return new Response("Not allowed", { status: 403 });
+      }
+    }
+    return serveObject(env.PHOTOS, facePhotoKey(wanted), request);
+  }
+
+  return new Response("Method not allowed", { status: 405 });
 }
 
 /** The path a browser should request for a stored image. */

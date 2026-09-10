@@ -91,7 +91,9 @@ function Settings({ userId, email }: { userId: string; email: string }) {
 
       <Section title="Privacy">
         <p className="text-sm leading-relaxed text-muted-foreground">
-          Face analysis runs entirely on your device. Only your photos and a numeric face signature are stored in your private account so results can be shown again later.
+          Face analysis runs on your device. Your account stores a numeric face signature and a
+          small crop of the photo you enrolled with, so the team can tell who is still waiting to
+          be photographed. Removing your face profile deletes both.
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
           <GlassButton variant="quiet" size="sm" loading={busy === "face"} onClick={resetFace}>

@@ -121,7 +121,9 @@ function AuthPage() {
           <h1 className="text-2xl font-semibold tracking-[-0.03em]">
             {mode === "in" ? "Welcome back" : "Create your account"}
           </h1>
-          <p className="mt-2 text-sm text-muted-foreground">Your face data never leaves your device.</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Your photos are matched to you and shared with nobody else.
+          </p>
         </div>
         <form onSubmit={submitMember} className="space-y-3" noValidate>
           {mode === "up" && (

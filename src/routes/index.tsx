@@ -27,7 +27,7 @@ export const Route = createFileRoute("/")({
 });
 
 const points = [
-  { icon: Lock, title: "Private by design", body: "Faces are analysed on your device. Biometric data is never sent to a third party." },
+  { icon: Lock, title: "Private by design", body: "Your photos are analysed on your device and never sent to a third party." },
   { icon: Cpu, title: "Instant results", body: "Hundreds of photos are matched in minutes, right in your browser." },
   { icon: Sparkles, title: "Precision matching", body: "A 128-point face signature separates you from everyone else in the frame." },
 ];

@@ -29,6 +29,7 @@ import {
   isSafeId,
   photoMetaKey,
   facesKey,
+  facePhotoKey,
   mediaUrl,
   DESCRIPTOR_DIM,
   type MediaEnv,
@@ -684,6 +685,23 @@ async function forgetFace(env: MediaEnv, member: MemberRecord): Promise<Response
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
   if (stale.length) await env.PHOTOS.delete(stale);
+
+  // The reference crop goes with the profile it belongs to. It is the only
+  // photograph of the member the app holds, and "remove my face profile" has to
+  // mean it is gone, not that the numbers went and the picture stayed.
+  await env.PHOTOS.delete(facePhotoKey(member.id)).catch(() => undefined);
+
+  // So do any waiting rows, which carry their name and phone number.
+  const waitingRows: string[] = [];
+  let waitingCursor: string | undefined;
+  do {
+    const page = await env.PHOTOS.list({ prefix: "waiting/", cursor: waitingCursor, limit: 1000 });
+    for (const o of page.objects) {
+      if (o.key.endsWith("/" + member.id)) waitingRows.push(o.key);
+    }
+    waitingCursor = page.truncated ? page.cursor : undefined;
+  } while (waitingCursor);
+  if (waitingRows.length) await env.PHOTOS.delete(waitingRows);
 
   return json({ ok: true, clearedScans: stale.length });
 }

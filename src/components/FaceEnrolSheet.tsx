@@ -91,8 +91,9 @@ export function FaceEnrolSheet({
             A photo of you, so we know who to look for
           </h2>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-            A clear, front-facing shot works best. It is analysed on your device, and you can
-            replace it any time from Settings.
+            A clear, front-facing shot works best. It is analysed on your device, and a small crop
+            is kept so the team can find you if you have not been photographed yet. You can replace
+            or remove it any time from Settings.
           </p>
         </div>
 

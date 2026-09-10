@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { Clock, Download, MessageCircle, Phone, ScanFace, UserCheck } from "lucide-react";
+import { Clock, Download, MessageCircle, Phone, ScanFace, UserCheck, UserRound } from "lucide-react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { EmptyState, GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
 import { api, type WaitingRow } from "@/lib/api";
@@ -74,6 +75,10 @@ export function WaitingPanel() {
           {rows.map((r) => (
             <li key={`${r.collectionId}:${r.userId}`}>
               <GlassCard className="flex flex-wrap items-center gap-4 px-5 py-4">
+                {/* The face they enrolled with. A name and a number do not let
+                    anyone pick a person out of a crowded room; this does, and
+                    it is the whole reason this list is worth having. */}
+                <FaceThumb userId={r.userId} name={r.fullName || r.email} />
                 <div className="min-w-0 flex-1">
                   {/* An operator account has no name on it, and a blank row is
                       a row nobody can act on. */}
@@ -121,6 +126,31 @@ export function WaitingPanel() {
         </ul>
       )}
     </section>
+  );
+}
+
+/**
+ * The member's own enrolment crop, or a placeholder if they have not given one.
+ *
+ * Served from /media/face, which only hands a face to the member it belongs to
+ * or to an operator.
+ */
+function FaceThumb({ userId, name }: { userId: string; name: string }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <div className="flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-full bg-secondary">
+      {failed ? (
+        <UserRound className="size-6 text-muted-foreground" strokeWidth={1.5} />
+      ) : (
+        <img
+          src={`/media/face/${userId}`}
+          alt={`${name}, as they enrolled`}
+          loading="lazy"
+          className="size-full object-cover"
+          onError={() => setFailed(true)}
+        />
+      )}
+    </div>
   );
 }
 
