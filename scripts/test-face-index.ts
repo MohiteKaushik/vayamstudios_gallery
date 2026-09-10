@@ -34,6 +34,8 @@ import {
   PROBE_CONCURRENCY,
   MAX_FRONTIER,
   DEFAULT_ROUNDS,
+  GET_BY_IDS_LIMIT,
+  UPSERT_LIMIT,
   LINK_MAX_DISTANCE,
   shardFor,
   indexPhotoFaces,
@@ -51,15 +53,20 @@ function mockIndex() {
   const all = new Map<string, number[]>();
   let queries = 0;
   let compared = 0;
+  let maxGetByIds = 0;
 
   return {
     store,
     reset() {
       queries = 0;
       compared = 0;
+      maxGetByIds = 0;
     },
-    stats: () => ({ queries, compared }),
+    stats: () => ({ queries, compared, maxGetByIds }),
     async upsert(vectors: { id: string; values: number[]; namespace?: string }[]) {
+      if (vectors.length > UPSERT_LIMIT) {
+        throw new Error(`too many vectors in payload; max is ${UPSERT_LIMIT}, got ${vectors.length}`);
+      }
       for (const v of vectors) {
         const ns = store.get(v.namespace!) ?? [];
         const i = ns.findIndex((x) => x.id === v.id);
@@ -81,6 +88,15 @@ function mockIndex() {
       return { matches: scored.slice(0, opts.topK) };
     },
     async getByIds(ids: string[]) {
+      // Mirrors the real refusal:
+      //   VECTOR_GET_ERROR (code = 40007): too many ids in payload;
+      //   max id count is 20, got 34
+      if (ids.length > GET_BY_IDS_LIMIT) {
+        throw new Error(
+          `VECTOR_GET_ERROR (code = 40007): too many ids in payload; max id count is ${GET_BY_IDS_LIMIT}, got ${ids.length}`,
+        );
+      }
+      maxGetByIds = Math.max(maxGetByIds, ids.length);
       return ids.filter((id) => all.has(id)).map((id) => ({ id, values: all.get(id)! }));
     },
     async deleteByIds(ids: string[]) {
@@ -357,6 +373,23 @@ let poseResult: {
   check("expansion keeps precision above 98%", expHit / Math.max(1, expHit + es.wrong) > 0.98,
     pct(expHit, expHit + es.wrong));
   check("expansion does not lose anything the single query found", expHit >= baseHit);
+
+  // The frontier is larger than the service will accept in one getByIds call.
+  // Sending it unchunked is what produced, in production:
+  //   VECTOR_GET_ERROR (code = 40007): too many ids in payload;
+  //   max id count is 20, got 34
+  // The mock now refuses oversized payloads, so reaching here at all proves the
+  // chunking holds. This asserts it explicitly rather than by absence of error.
+  check(
+    "no getByIds call exceeds the service limit",
+    idx.stats().maxGetByIds <= GET_BY_IDS_LIMIT,
+    `largest call carried ${idx.stats().maxGetByIds} ids, limit ${GET_BY_IDS_LIMIT}`,
+  );
+  check(
+    "the frontier is genuinely larger than that limit",
+    MAX_FRONTIER > GET_BY_IDS_LIMIT,
+    `frontier ${MAX_FRONTIER} vs limit ${GET_BY_IDS_LIMIT}, so chunking is actually exercised`,
+  );
 }
 
 // ===========================================================================

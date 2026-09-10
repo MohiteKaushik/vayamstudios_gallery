@@ -89,6 +89,49 @@ async function inBatches<T>(items: T[], size: number, job: (item: T) => Promise<
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/*                      Limits the service actually enforces                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Vectorize rejects a getByIds call carrying more than this, and rejects the
+ * whole request rather than truncating:
+ *
+ *   VECTOR_GET_ERROR (code = 40007): too many ids in payload;
+ *   max id count is 20, got 34
+ *
+ * MAX_FRONTIER is larger than this on purpose, because the frontier size is a
+ * search-quality decision and should not be dictated by a transport limit. The
+ * chunking below keeps the two independent.
+ */
+export const GET_BY_IDS_LIMIT = 20;
+
+/** Vectors per delete call. Kept well inside anything the service enforces. */
+export const DELETE_BY_IDS_LIMIT = 500;
+
+/** Vectors per upsert call, from the documented Workers limit. */
+export const UPSERT_LIMIT = 1000;
+
+/**
+ * Fetches stored vectors by id, in chunks the service will accept.
+ *
+ * Chunks are fetched in parallel; they are independent reads and the round
+ * trips would otherwise add up across an expansion round.
+ */
+export async function getByIdsBatched(
+  index: VectorizeIndex,
+  ids: string[],
+): Promise<{ id: string; values: number[] }[]> {
+  if (ids.length === 0) return [];
+
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += GET_BY_IDS_LIMIT) {
+    chunks.push(ids.slice(i, i + GET_BY_IDS_LIMIT));
+  }
+  const results = await Promise.all(chunks.map((chunk) => index.getByIds(chunk)));
+  return results.flat();
+}
+
 export type VectorizeIndex = {
   upsert: (vectors: VectorizeVector[]) => Promise<unknown>;
   query: (vector: number[], opts: VectorizeQueryOptions) => Promise<VectorizeMatches>;
@@ -163,9 +206,8 @@ export async function indexPhotoFaces(
     namespace: namespaceFor(collectionId, shard),
   }));
 
-  // Vectorize accepts up to 1000 vectors per upsert from a Worker.
-  for (let i = 0; i < vectors.length; i += 1000) {
-    await index.upsert(vectors.slice(i, i + 1000));
+  for (let i = 0; i < vectors.length; i += UPSERT_LIMIT) {
+    await index.upsert(vectors.slice(i, i + UPSERT_LIMIT));
   }
   return { indexed: vectors.length, ids: vectors.map((v) => v.id) };
 }
@@ -286,7 +328,9 @@ export async function searchCollection(
     const probes = [...frontier].sort((a, b) => a.distance - b.distance).slice(0, maxFrontier);
 
     // Vectorize returns stored values by id, so probes cost no extra query.
-    const vectors = await index.getByIds(probes.map((p) => p.faceId));
+    // It accepts at most GET_BY_IDS_LIMIT per call and rejects the whole
+    // request past that, so this is chunked rather than sent in one go.
+    const vectors = await getByIdsBatched(index, probes.map((p) => p.faceId));
     const byId = new Map(vectors.map((v) => [v.id, v.values]));
 
     // Probes run in bounded parallel batches. Run sequentially this loop would
@@ -410,5 +454,9 @@ export async function removePhotoFaces(
 ): Promise<void> {
   if (args.faceCount === 0) return;
   const ids = Array.from({ length: args.faceCount }, (_, slot) => vectorId(args.photoId, slot));
-  await index.deleteByIds(ids);
+  // Chunked for the same reason as getByIds: the service rejects an oversized
+  // payload outright rather than processing what it can.
+  for (let i = 0; i < ids.length; i += DELETE_BY_IDS_LIMIT) {
+    await index.deleteByIds(ids.slice(i, i + DELETE_BY_IDS_LIMIT));
+  }
 }
