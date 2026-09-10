@@ -116,3 +116,63 @@ export async function reanalyseCollection(opts: {
   onProgress({ ...p });
   return p;
 }
+
+/**
+ * Keeps indexing whatever arrives, for as long as the tab is open.
+ *
+ * During an event the photographs come off a camera and are pushed up by the
+ * watcher script in tools/. That script cannot look at them: face detection
+ * needs a canvas and a model, and it runs here, in a browser. So it uploads,
+ * and this watches for photographs with no face record and reads them.
+ *
+ * The two halves are deliberately independent. The uploading laptop may not be
+ * yours, and this only needs a console signed in somewhere with the tab left
+ * open. Nothing is lost if it is closed; the photographs are already stored and
+ * the next run picks up exactly where this stopped.
+ */
+export async function keepIndexing(opts: {
+  collectionId: string;
+  onProgress: (p: ReanalyseProgress) => void;
+  onIdle: (waitingFor: number) => void;
+  signal: AbortSignal;
+  pollMs?: number;
+}): Promise<void> {
+  const { collectionId, onProgress, onIdle, signal, pollMs = 6000 } = opts;
+
+  while (!signal.aborted) {
+    const pending = await api.unindexedPhotos(collectionId).catch(() => null);
+    if (signal.aborted) return;
+
+    if (!pending || pending.photoIds.length === 0) {
+      onIdle(pending?.indexed ?? 0);
+      await new Promise((r) => setTimeout(r, pollMs));
+      continue;
+    }
+
+    const p: ReanalyseProgress = {
+      processed: 0,
+      total: pending.photoIds.length,
+      faces: 0,
+      indexed: 0,
+      failed: 0,
+      skipped: 0,
+      bytesIn: 0,
+      bytesOut: 0,
+      indexPending: 0,
+    };
+    onProgress({ ...p });
+
+    for (const photoId of pending.photoIds) {
+      if (signal.aborted) return;
+      try {
+        p.faces += await reanalysePhoto(collectionId, photoId);
+      } catch (e) {
+        p.failed++;
+        if (!p.firstError) p.firstError = e instanceof Error ? e.message : String(e);
+      }
+      p.processed++;
+      p.indexed = p.faces;
+      onProgress({ ...p });
+    }
+  }
+}

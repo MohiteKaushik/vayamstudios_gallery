@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layers, UserRound } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { MembersPanel } from "@/components/MembersPanel";
+import { WaitingPanel } from "@/components/WaitingPanel";
 import { EventShowcase } from "@/components/EventShowcase";
 import { GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
 import { api } from "@/lib/api";
@@ -107,6 +108,7 @@ function Home({ userId }: { userId: string }) {
           </Link>
         </section>
         {collectionList}
+        <WaitingPanel />
         <MembersPanel />
       </AppShell>
     );

@@ -81,11 +81,23 @@ function mockIndex() {
       const ns = store.get(opts.namespace!) ?? [];
       queries++;
       compared += ns.length;
-      const scored = ns.map((v) => ({
-        id: v.id,
-        score: Math.sqrt(v.values.reduce((s, x, i) => s + (x - vector[i]!) ** 2, 0)),
-      }));
-      scored.sort((a, b) => a.score - b.score);
+
+      // The real index is a cosine one, and a cosine index scores by
+      // SIMILARITY: 1 is the same vector and bigger is closer, the opposite
+      // way round from a distance. This mock used to return a Euclidean
+      // distance, which is what a euclidean index returns, and so it agreed
+      // with code that had the convention backwards. In production that code
+      // threw away every exact match and kept every unrelated face.
+      //
+      // So the mock lies the way the service lies, and the module under test
+      // has to convert. Vectors here are unit length, as ArcFace embeddings
+      // are, which is what makes the two forms interchangeable.
+      const scored = ns.map((v) => {
+        let dot = 0;
+        for (let i = 0; i < vector.length; i++) dot += v.values[i]! * vector[i]!;
+        return { id: v.id, score: dot };
+      });
+      scored.sort((a, b) => b.score - a.score);
       return { matches: scored.slice(0, opts.topK) };
     },
     async getByIds(ids: string[]) {
@@ -137,8 +149,13 @@ const unit = (v: number[]) => {
   const n = Math.hypot(...v);
   return v.map((x) => x / n);
 };
+// Cosine distance, matching production. Every vector here is unit length, so
+// this is a monotone rescaling of the Euclidean distance it replaced, but the
+// numbers differ and the threshold is compared against these ones. Leaving it
+// Euclidean made the brute-force baseline and the index disagree about what
+// 0.46 meant, and reported 171 correct matches as false positives.
 const dist = (a: number[], b: number[]) =>
-  Math.sqrt(a.reduce((s, x, i) => s + (x - b[i]!) ** 2, 0));
+  1 - a.reduce((s, x, i) => s + x * b[i]!, 0);
 
 const POSE_AXIS = unit(randVec());
 const COMMON_AXIS = unit(randVec());
@@ -170,7 +187,23 @@ const check = (name: string, pass: boolean, detail = "") => {
 };
 const pct = (a: number, b: number) => (b === 0 ? "n/a" : ((a / b) * 100).toFixed(1) + "%");
 
-const T = 0.46;
+/**
+ * The simulation's match threshold, in cosine distance.
+ *
+ * It read 0.46 while everything here measured Euclidean distance. Every vector
+ * in this file is unit length, so the two are related exactly:
+ *
+ *   cosine = euclidean squared / 2
+ *
+ * and 0.46 Euclidean is 0.106 cosine. The geometry the generator produces has
+ * not changed; only the ruler has. Production reads cosine because ArcFace
+ * embeddings are compared by angle, and a test that measured one thing while
+ * the code measured another reported 171 correct matches as false positives.
+ *
+ * This is not the live threshold. That is MATCH_MAX_DISTANCE in face.ts, set
+ * from real photographs; this one keeps the simulation's own geometry intact.
+ */
+const T = (0.46 * 0.46) / 2;
 
 // ===========================================================================
 console.log("\n=== 1. Vectorize limits ===");
@@ -210,7 +243,7 @@ console.log("\n=== 3. simulation calibration ===");
   console.log(`  different people, both frontal ${diff.toFixed(3)}`);
   check("frontal pair inside the cut-off", ff < T);
   check("45 degree pair outside the cut-off", f45 > T, "this is the problem being solved");
-  check("different people well separated", diff > 1.0);
+  check("different people well separated", diff > (1.0 * 1.0) / 2);
 }
 
 // ===========================================================================
@@ -460,7 +493,7 @@ console.log("\n=== 7. reference diversity ===");
   const kept = pickDiverseReferences(seed, candidates, 4);
   check("keeps the requested number", kept.length === 4, `${kept.length}`);
   const spread = kept.slice(1).map((k) => dist(k, kept[0]!));
-  check("prefers angles far from the enrolment selfie", Math.max(...spread) > 0.6,
+  check("prefers angles far from the enrolment selfie", Math.max(...spread) > (0.6 * 0.6) / 2,
     `furthest kept sits ${Math.max(...spread).toFixed(2)} away`);
 }
 

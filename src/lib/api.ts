@@ -103,7 +103,34 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * Someone who searched an event and came up empty.
+ *
+ * At a live event this usually means the photographer has not reached them yet
+ * rather than that they are absent from the photographs, which makes it a list
+ * to act on rather than a log to read.
+ */
+export type WaitingRow = {
+  userId: string;
+  fullName: string;
+  email: string;
+  phone: string;
+  collectionId: string;
+  collectionName: string;
+  firstAskedAt: number;
+  lastAskedAt: number;
+  attempts: number;
+  hasReference: boolean;
+};
+
 export const api = {
+  unindexedPhotos: (collectionId: string) =>
+    call<{ photoIds: string[]; total: number; indexed: number }>(
+      `/api/collections/${collectionId}/unindexed`,
+    ),
+
+  listWaiting: () => call<{ waiting: WaitingRow[] }>("/api/waiting").then((r) => r.waiting),
+
   listMembers: () =>
     call<{ members: MemberRow[] }>("/api/members").then((r) => r.members),
 

@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ImagePlus, Layers, Plus, RefreshCw, ScanFace, Trash2, X } from "lucide-react";
-import { useRef, useState, type FormEvent } from "react";
+import { ChevronLeft, ImagePlus, Layers, Plus, Radio, RefreshCw, ScanFace, Trash2, X } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { ScanProgress } from "@/components/ScanProgress";
@@ -13,7 +13,7 @@ import { useRequireAuth } from "@/lib/auth-gate";
 import { formatCount } from "@/lib/images";
 import { api, ApiError, confidencePercent, type Photo, type ScanHit, type ScanResult } from "@/lib/api";
 import { uploadPhotos, uploadSavings, type BulkProgress } from "@/lib/upload";
-import { reanalyseCollection } from "@/lib/reanalyse";
+import { keepIndexing, reanalyseCollection } from "@/lib/reanalyse";
 import { useIsAdmin } from "@/lib/roles";
 
 export const Route = createFileRoute("/collections")({
@@ -223,6 +223,12 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
   const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<BulkProgress | null>(null);
+  // Live indexing runs until it is stopped, so it is held as a controller
+  // rather than a boolean: closing the tab has to end it too.
+  const [watcher, setWatcher] = useState<AbortController | null>(null);
+  const [idle, setIdle] = useState<number | null>(null);
+
+  useEffect(() => () => watcher?.abort(), [watcher]);
   const [open, setOpen] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -285,6 +291,42 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
   }
 
   /**
+   * Watches for photographs the uploader script has pushed up, and indexes
+   * them. Runs until it is switched off or the tab is closed.
+   */
+  function toggleLive() {
+    if (watcher) {
+      watcher.abort();
+      setWatcher(null);
+      setProgress(null);
+      setIdle(null);
+      toast.info("Stopped watching for new photos");
+      return;
+    }
+    const controller = new AbortController();
+    setWatcher(controller);
+    toast.success("Watching for new photos. Keep this tab open.");
+    void keepIndexing({
+      collectionId,
+      signal: controller.signal,
+      onProgress: (p) => {
+        setIdle(null);
+        setProgress({ ...p });
+      },
+      onIdle: (indexed) => {
+        setProgress(null);
+        setIdle(indexed);
+        qc.invalidateQueries({ queryKey: ["photos", collectionId] });
+      },
+    }).catch((e) => {
+      if (!controller.signal.aborted) {
+        toast.error(e instanceof Error ? e.message : "Stopped watching");
+        setWatcher(null);
+      }
+    });
+  }
+
+  /**
    * Reads every photograph in this event again.
    *
    * The photographs are not touched and nothing is re-uploaded; only the face
@@ -343,6 +385,14 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
           }}
         />
         <div className="flex items-center gap-2">
+          {/* Indexing whatever the uploader script pushes up, as it arrives. */}
+          <GlassButton
+            variant={watcher ? "danger" : "quiet"}
+            icon={<Radio className="size-4" />}
+            onClick={toggleLive}
+          >
+            {watcher ? "Stop watching" : "Live indexing"}
+          </GlassButton>
           {/* Reading every photograph again with the current recogniser.
               Needed once after the recogniser changes, because a face record
               only means anything to the model that wrote it. */}
@@ -403,6 +453,18 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
             title="Indexing photos"
             subtitle={`Analysing ${Math.min(progress.processed + 1, progress.total)} of ${progress.total}`}
           />
+        </div>
+      )}
+
+      {watcher && idle !== null && (
+        <div className="glass-chrome mb-6 flex items-center gap-3 rounded-2xl border px-4 py-3 text-sm">
+          <span className="relative flex size-2 shrink-0">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+          </span>
+          <span className="text-muted-foreground">
+            Watching for new photos · {formatCount(idle, "photo")} indexed so far. Keep this tab open.
+          </span>
         </div>
       )}
 
@@ -608,7 +670,7 @@ function emptyTitle(r: ScanResult | undefined): string {
     case "no-faces":
       return "No faces in these photos";
     default:
-      return "No matches here";
+      return "Your photos are on their way";
   }
 }
 
@@ -626,7 +688,13 @@ function explainEmpty(r: ScanResult): string {
         ? `${n.pending} of ${n.withFaces} photo(s) with faces are still being added to the search. Try again in a minute.`
         : "These photos are still being prepared for search. Try again in a minute.";
     default:
-      return "You do not appear in these photos, or the shots of you are too small or turned too far away to recognise.";
+      // "No matches here" was the honest reading of the data and the wrong
+      // thing to say to a guest at a live event. Most of the time it does not
+      // mean they were photographed and missed, it means the photographer has
+      // not reached them yet, and the team is told so they can. Telling someone
+      // they are not in the photographs, at an event they are standing in, is
+      // both discouraging and usually untrue.
+      return "The team has not photographed you yet, or your photos are still being uploaded. Do check back a little later.";
   }
 }
 

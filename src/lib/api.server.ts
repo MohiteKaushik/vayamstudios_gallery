@@ -325,6 +325,10 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
     if (rest[1] === "status" && request.method === "GET") {
       return json(await collectionStatus(env, cid));
     }
+    if (rest[1] === "unindexed" && request.method === "GET") {
+      if (!isAdmin) return json({ error: "Admins only" }, 403);
+      return json(await unindexedPhotos(env, cid));
+    }
     if (rest[1] === "reindex" && request.method === "POST") {
       if (!isAdmin) return json({ error: "Admins only" }, 403);
       return reindexCollection(env, cid);
@@ -339,6 +343,11 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
   if (head === "members" && request.method === "GET") {
     if (!isAdmin) return json({ error: "Admins only" }, 403);
     return listMembers(env);
+  }
+
+  if (head === "waiting" && request.method === "GET") {
+    if (!isAdmin) return json({ error: "Admins only" }, 403);
+    return listWaiting(env);
   }
 
   if (head === "face-profile") {
@@ -378,15 +387,76 @@ async function listCollections(env: MediaEnv): Promise<Response> {
   const collections = await mapLimit(
     records.filter((r): r is CollectionRecord => r !== null),
     10,
-    async (c) => ({
-      ...c,
-      photoCount: await countPhotos(env.PHOTOS, c.id),
-      coverUrl: c.coverPhotoId ? mediaUrl(c.id, c.coverPhotoId, "t") : null,
-    }),
+    async (c) => {
+      const cover = c.coverPhotoId ?? (await firstPhotoId(env.PHOTOS, c.id));
+      return {
+        ...c,
+        coverPhotoId: cover,
+        photoCount: await countPhotos(env.PHOTOS, c.id),
+        coverUrl: cover ? mediaUrl(c.id, cover, "t") : null,
+      };
+    },
   );
 
   collections.sort((a, b) => b.createdAt - a.createdAt);
   return json({ collections });
+}
+
+/**
+ * A photograph to put on the event's card.
+ *
+ * coverPhotoId is set when an event is created and never written again, so it
+ * was null for every event that has ever existed and every card came up blank.
+ * Rather than a migration, the cover falls back to the first photograph in the
+ * event, which is one listing of one key and is what an operator would have
+ * picked anyway.
+ */
+async function firstPhotoId(bucket: R2Bucket, cid: string): Promise<string | null> {
+  const prefix = `meta/photo/${cid}/`;
+  const page = await bucket.list({ prefix, limit: 1 });
+  const key = page.objects[0]?.key;
+  if (!key) return null;
+  const id = key.slice(prefix.length);
+  return isSafeId(id) ? id : null;
+}
+
+/**
+ * Photographs in this event that no face record covers yet.
+ *
+ * The uploader script has no way to look at a photograph: detection runs in a
+ * browser, on a canvas, and a script pushing files from a memory card is not
+ * one. So it uploads, and a console left open watches this list and indexes
+ * whatever appears. That keeps the two halves independent, which matters when
+ * the uploading laptop belongs to somebody else.
+ *
+ * Ids only. During an event this is polled every few seconds and the records
+ * themselves are not needed to decide what to work on.
+ */
+async function unindexedPhotos(
+  env: MediaEnv,
+  cid: string,
+): Promise<{ photoIds: string[]; total: number; indexed: number }> {
+  const collect = async (prefix: string) => {
+    const ids = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const page = await env.PHOTOS.list({ prefix, cursor, limit: 1000 });
+      for (const o of page.objects) {
+        const id = o.key.slice(prefix.length);
+        if (isSafeId(id)) ids.add(id);
+      }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    return ids;
+  };
+
+  const [photos, faces] = await Promise.all([
+    collect(`meta/photo/${cid}/`),
+    collect(`meta/faces/${cid}/`),
+  ]);
+
+  const pending = [...photos].filter((id) => !faces.has(id));
+  return { photoIds: pending, total: photos.size, indexed: faces.size };
 }
 
 async function countPhotos(bucket: R2Bucket, cid: string): Promise<number> {
@@ -973,6 +1043,95 @@ async function saveFaceProfile(
   return json({ ok: true, references: references.length });
 }
 
+/* -------------------------------------------------------------------------- */
+/*                              Waiting for photos                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Someone who searched and found nothing.
+ *
+ * At a live event this is almost never "you are not in the photographs". It is
+ * "the photographer has not reached you yet", and that is something the team
+ * can act on within minutes if they know about it. So every empty search is
+ * recorded against the member, with how many times they have tried, and the
+ * console shows the list newest first.
+ *
+ * The record is deleted the moment a search of theirs succeeds, so the list is
+ * the people still waiting rather than a log of everyone who ever waited.
+ */
+export type WaitingRecord = {
+  userId: string;
+  fullName: string;
+  email: string;
+  phone: string;
+  collectionId: string;
+  collectionName: string;
+  /** When they first came up empty in this event. */
+  firstAskedAt: number;
+  /** When they last tried. */
+  lastAskedAt: number;
+  attempts: number;
+  /** Whether they have a reference face at all, which changes what to do. */
+  hasReference: boolean;
+};
+
+const waitingKey = (userId: string, cid: string) => `waiting/${cid}/${userId}`;
+
+/** Records an empty search, or updates the one already there. */
+async function noteWaiting(
+  env: MediaEnv,
+  member: MemberRecord,
+  cid: string,
+  collectionName: string,
+  hasReference: boolean,
+): Promise<void> {
+  const key = waitingKey(member.id, cid);
+  const existing = await readJson<WaitingRecord>(env.PHOTOS, key);
+  const now = Date.now();
+  await writeJson(env.PHOTOS, key, {
+    userId: member.id,
+    fullName: member.fullName,
+    email: member.email,
+    phone: member.phone,
+    collectionId: cid,
+    collectionName,
+    firstAskedAt: existing?.firstAskedAt ?? now,
+    lastAskedAt: now,
+    attempts: (existing?.attempts ?? 0) + 1,
+    hasReference,
+  } satisfies WaitingRecord);
+}
+
+/** Clears the record once this person has been found. */
+async function clearWaiting(env: MediaEnv, userId: string, cid: string): Promise<void> {
+  await env.PHOTOS.delete(waitingKey(userId, cid)).catch(() => undefined);
+}
+
+/**
+ * Everyone still waiting, newest first.
+ *
+ * Deliberately not paginated. If this list is long enough to need paging, the
+ * event has a problem no interface is going to solve.
+ */
+async function listWaiting(env: MediaEnv): Promise<Response> {
+  const keys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.PHOTOS.list({ prefix: "waiting/", cursor, limit: 1000 });
+    for (const o of page.objects) keys.push(o.key);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+
+  const rows = await mapLimit(keys, READ_CONCURRENCY, (k) =>
+    readJson<WaitingRecord>(env.PHOTOS, k),
+  );
+  const waiting = rows
+    .filter((r): r is WaitingRecord => r !== null)
+    .sort((a, b) => b.lastAskedAt - a.lastAskedAt);
+
+  return json({ waiting });
+}
+
 /* ---------------------------------- scan ---------------------------------- */
 
 /**
@@ -1009,6 +1168,10 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
   // a new photo instead.
   const usable = member.references.filter((r) => r.length === DESCRIPTOR_DIM);
   if (usable.length === 0) {
+    // They asked, which is the fact the team needs, whether or not they got as
+    // far as giving us a face.
+    const named = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(cid));
+    await noteWaiting(env, member, cid, named?.name ?? cid, false).catch(() => undefined);
     return json({
       error: member.references.length
         ? "Your reference photo was taken with the old recogniser. Please add it again."
@@ -1122,5 +1285,16 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
     ...(orphaned > 0 ? { orphaned } : {}),
   };
   await writeJson(env.PHOTOS, scanKey(userId, cid), record);
+
+  // The team needs to know who is still waiting while the event is running, not
+  // afterwards. Written on the way out of the scan so the console is current
+  // within a second of someone pressing Find me.
+  if (hits.length === 0) {
+    const named = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(cid));
+    await noteWaiting(env, member, cid, named?.name ?? cid, true).catch(() => undefined);
+  } else {
+    await clearWaiting(env, userId, cid);
+  }
+
   return json(record);
 }
