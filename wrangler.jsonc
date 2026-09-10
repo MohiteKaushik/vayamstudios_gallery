@@ -37,15 +37,20 @@
     }
   ],
 
-  // The face pre-index. 128 dimensions matches the current face-api
-  // descriptor. Euclidean metric, so the browser and the index measure
-  // distance the same way and MATCH_MAX_DISTANCE means one thing everywhere.
+  // The face pre-index. 512 dimensions and cosine metric, matching the ArcFace
+  // embeddings, so the browser and the index measure the same thing and
+  // MATCH_MAX_DISTANCE means one thing everywhere.
   //
-  //   npx wrangler vectorize create vayam-faces --dimensions=128 --metric=euclidean
+  //   npx wrangler vectorize create vayam-faces-arcface --dimensions=512 --metric=cosine
+  //
+  // A dimension cannot be changed once an index exists, so this is a new index
+  // rather than an altered one. The old 128-dimension "vayam-faces" still holds
+  // the face-api vectors and is left alone: it costs nothing, and it is the only
+  // way back if this pack turns out worse on photographs we have not seen.
   "vectorize": [
     {
       "binding": "FACE_INDEX",
-      "index_name": "vayam-faces",
+      "index_name": "vayam-faces-arcface",
       // Cloudflare cannot emulate Vectorize locally, so without this the
       // binding is simply absent in dev and every upload reports its faces as
       // stored but not searchable. "remote" makes local development talk to

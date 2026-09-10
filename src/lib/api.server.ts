@@ -30,6 +30,7 @@ import {
   photoMetaKey,
   facesKey,
   mediaUrl,
+  DESCRIPTOR_DIM,
   type MediaEnv,
   type PhotoMeta,
 } from "./media.server.ts";
@@ -53,6 +54,7 @@ import { hashPassword } from "./auth/password.ts";
 import { validateSignUp } from "./members.ts";
 import { searchCollection, indexPhotoFaces } from "./face-index.server.ts";
 import { MATCH_MAX_DISTANCE } from "./face.ts";
+import { cosineDistance } from "./insightface.ts";
 import type { R2Bucket } from "./storage.server.ts";
 
 export const API_PREFIX = "/api";
@@ -133,7 +135,7 @@ const scanKey = (userId: string, cid: string) => `scan/${userId}/${cid}`;
  *   2  threshold 0.34, expansion off, no marginal tier
  *   3  threshold 0.10, confidence read from the measured curve
  */
-const MATCHER_VERSION = 3;
+const MATCHER_VERSION = 4;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -175,53 +177,55 @@ const READ_CONCURRENCY = 50;
 /**
  * Turns a distance into a percentage a person can act on.
  *
- * The number used to be anchored to the match threshold: whatever the threshold
- * was, a match sitting exactly on it read 80 percent. So when strangers were
- * getting through, they arrived wearing 81 percent, and the figure argued for
- * them. A confidence that moves whenever the threshold moves is not telling
- * anyone anything about the photograph.
+ * Anchored to the photographs, not to the threshold. An earlier version tied
+ * this to MATCH_MAX_DISTANCE, so whatever the threshold was, a result sitting
+ * on it read 80 percent; when strangers were getting through they arrived
+ * wearing 81 percent and the figure argued for them.
  *
- * This is anchored to the photographs instead, from the distances measured
- * across the live collections. Two faces of different people sit around 0.66
- * apart, and the first stranger to reach a member's reference did so at 0.349.
- * So 0.35 has to read as a coin toss, not as near certainty, and it does.
+ * These anchors come from the three live collections measured through the
+ * InsightFace pack, in cosine distance between unit-length embeddings:
+ *
+ *   0.00  the same photograph
+ *   0.17  the furthest true match in the demo collection
+ *   0.39  the furthest true match in the event collection
+ *   0.50  the threshold; a hard profile shot of the right person sits here
+ *   0.60  the nearest genuine stranger seen in any collection
+ *   0.90  where two unrelated faces typically sit
  *
  *   distance   reads as
- *   0.00        99%      the same photograph
- *   0.10        90%
- *   0.20        75%
- *   0.30        55%
- *   0.35        45%      about where the first stranger appeared
- *   0.46        25%
- *   0.60        8%       about where different people sit
- *   0.80+       2%
+ *   0.00        99%
+ *   0.20        92%
+ *   0.35        82%
+ *   0.50        70%      a real match, at an awkward angle
+ *   0.60        45%
+ *   0.75        15%
+ *   0.90+        3%
  *
- * The curve is independent of MATCH_MAX_DISTANCE on purpose. Move the threshold
- * and the percentages stay honest; what changes is only how far down the curve
- * a member is allowed to see.
+ * The curve stays generous inside the threshold and falls off a cliff just
+ * past it, which is the shape the measurements actually have: below 0.5 nearly
+ * everything was the right person, and by 0.6 it was not.
  */
 const CONFIDENCE_CURVE: readonly (readonly [number, number])[] = [
   [0.0, 0.99],
-  [0.1, 0.9],
-  [0.2, 0.75],
-  [0.3, 0.55],
-  [0.35, 0.45],
-  [0.46, 0.25],
-  [0.6, 0.08],
-  [0.8, 0.02],
-  [1.2, 0.0],
+  [0.2, 0.92],
+  [0.35, 0.82],
+  [0.5, 0.7],
+  [0.6, 0.45],
+  [0.75, 0.15],
+  [0.9, 0.03],
+  [2.0, 0.0],
 ];
 
 /** Kept for the tiering below and for anything that still reads it. */
-export const CERTAIN_DISTANCE = 0.1;
+export const CERTAIN_DISTANCE = 0.2;
 
 /**
  * The bar a result must clear to be shown at all.
  *
  * Read against the curve above rather than against the threshold, so it means
- * a fixed level of evidence. At the current match distance everything shown is
- * far above it; loosen the match distance and this is what stops the weak
- * results reaching a member.
+ * a fixed level of evidence. At the current match distance everything admitted
+ * clears it; loosen the match distance and this is what stops weak results
+ * reaching a member.
  */
 export const CONFIDENT_THRESHOLD = 0.4;
 
@@ -229,7 +233,7 @@ export const CONFIDENT_THRESHOLD = 0.4;
  * Hops are evidence too, and weaker evidence than a direct match.
  *
  * Nothing produces hops while the graph expansion is off, but the penalty
- * stands so that a linked face never reads as confidently as a face matched
+ * stands so that a linked face never reads as confidently as one matched
  * straight off the member's own reference.
  */
 const HOP_PENALTY = 0.06;
@@ -787,7 +791,7 @@ async function reindexCollection(env: MediaEnv, cid: string): Promise<Response> 
     for (const { photoId, record, key } of records) {
       const descriptors = (record?.faces ?? [])
         .map((f) => f.descriptor)
-        .filter((d) => Array.isArray(d) && d.length === 128);
+        .filter((d) => Array.isArray(d) && d.length === DESCRIPTOR_DIM);
       if (descriptors.length === 0) continue;
 
       const result = await indexPhotoFaces(env.FACE_INDEX, {
@@ -822,16 +826,33 @@ async function selfTest(env: MediaEnv, cid: string): Promise<Response> {
 
   const page = await env.PHOTOS.list({ prefix: `meta/faces/${cid}/`, limit: 50 });
   let chosen: { photoId: string; descriptor: number[] } | null = null;
+  let staleFaces = 0;
 
   for (const o of page.objects) {
     const record = await readJson<{ faces: { descriptor: number[] }[] }>(env.PHOTOS, o.key);
     const descriptor = record?.faces?.[0]?.descriptor;
-    if (Array.isArray(descriptor) && descriptor.length === 128) {
-      chosen = { photoId: o.key.slice(`meta/faces/${cid}/`.length), descriptor };
-      break;
+    if (!Array.isArray(descriptor)) continue;
+    if (descriptor.length !== DESCRIPTOR_DIM) {
+      staleFaces++;
+      continue;
     }
+    chosen = { photoId: o.key.slice(`meta/faces/${cid}/`.length), descriptor };
+    break;
   }
-  if (!chosen) return json({ ok: false, reason: "No indexed faces to test with" });
+
+  // A face of the wrong width was written by the previous recogniser. It is not
+  // corrupt and the photograph is fine; the numbers simply describe a different
+  // space and will never match anything the current model produces. Say so,
+  // rather than reporting an empty collection, because the fix is one button.
+  if (!chosen) {
+    return json({
+      ok: false,
+      reason: staleFaces
+        ? `${staleFaces} photo(s) here were analysed by the previous recogniser. Open this event and press Re-analyse.`
+        : "No indexed faces to test with",
+      ...(staleFaces ? { staleFaces } : {}),
+    });
+  }
 
   const outcome = await searchCollection(env.FACE_INDEX, {
     collectionId: cid,
@@ -851,17 +872,21 @@ async function selfTest(env: MediaEnv, cid: string): Promise<Response> {
   for (const o of page2.objects) {
     const record = await readJson<{ faces: { descriptor: number[] }[] }>(env.PHOTOS, o.key);
     for (const f of record?.faces ?? []) {
-      if (Array.isArray(f.descriptor) && f.descriptor.length === 128) sample.push(f.descriptor);
+      if (Array.isArray(f.descriptor) && f.descriptor.length === DESCRIPTOR_DIM) sample.push(f.descriptor);
     }
     if (sample.length >= 40) break;
   }
 
+  // Cosine distance, the same units as MATCH_MAX_DISTANCE and the same thing
+  // the index reports. This used to be a Euclidean sum over the first 128
+  // components, which was right for the old descriptor and, after the change,
+  // was measuring a fraction of a vector in the wrong metric: it read 0.68
+  // where the real figure was 0.91, and made a healthy collection look as
+  // though every face in it sat on top of every other.
   const distances: number[] = [];
   for (let i = 0; i < sample.length; i++) {
     for (let j = i + 1; j < sample.length; j++) {
-      let sum = 0;
-      for (let k = 0; k < 128; k++) sum += (sample[i]![k]! - sample[j]![k]!) ** 2;
-      distances.push(Math.sqrt(sum));
+      distances.push(cosineDistance(sample[i]!, sample[j]!));
     }
   }
   distances.sort((a, b) => a - b);
@@ -927,8 +952,12 @@ async function saveFaceProfile(
   const references = Array.isArray(body.references) ? body.references.slice(0, 8) : [];
   if (references.length === 0) return json({ error: "No reference face supplied" }, 400);
   for (const r of references) {
-    if (!Array.isArray(r) || r.length !== 128 || r.some((n) => typeof n !== "number" || !Number.isFinite(n))) {
-      return json({ error: "Each reference must be 128 numbers" }, 400);
+    if (
+      !Array.isArray(r) ||
+      r.length !== DESCRIPTOR_DIM ||
+      r.some((n) => typeof n !== "number" || !Number.isFinite(n))
+    ) {
+      return json({ error: `Each reference must be ${DESCRIPTOR_DIM} numbers` }, 400);
     }
   }
 
@@ -971,8 +1000,21 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
 
   const member = await getMemberById(env.PHOTOS, userId);
   if (!member) return json({ error: "No such member" }, 401);
-  if (member.references.length === 0) {
-    return json({ error: "Add a reference photo of yourself first", code: "no-face" }, 400);
+
+  // A reference of the wrong width is a profile from the old face-api model,
+  // which described faces in 128 numbers rather than 512 and in a space these
+  // vectors have nothing to do with. Comparing across the two would not throw,
+  // it would just never match anything, and the member would be told they are
+  // not in the photographs. Treat it as no face at all, so they are asked for
+  // a new photo instead.
+  const usable = member.references.filter((r) => r.length === DESCRIPTOR_DIM);
+  if (usable.length === 0) {
+    return json({
+      error: member.references.length
+        ? "Your reference photo was taken with the old recogniser. Please add it again."
+        : "Add a reference photo of yourself first",
+      code: "no-face",
+    }, 400);
   }
   if (!env.FACE_INDEX) {
     return json({ error: "The face index is unavailable", code: "no-index" }, 503);
@@ -989,7 +1031,7 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
   const tSearch = Date.now();
   const outcome = await searchCollection(env.FACE_INDEX, {
     collectionId: cid,
-    references: member.references,
+    references: usable,
     threshold: MATCH_MAX_DISTANCE,
   });
   const searchMs = Date.now() - tSearch;

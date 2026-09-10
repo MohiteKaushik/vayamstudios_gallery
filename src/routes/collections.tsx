@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ImagePlus, Layers, Plus, ScanFace, Trash2, X } from "lucide-react";
+import { ChevronLeft, ImagePlus, Layers, Plus, RefreshCw, ScanFace, Trash2, X } from "lucide-react";
 import { useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
@@ -13,6 +13,7 @@ import { useRequireAuth } from "@/lib/auth-gate";
 import { formatCount } from "@/lib/images";
 import { api, ApiError, confidencePercent, type Photo, type ScanHit, type ScanResult } from "@/lib/api";
 import { uploadPhotos, uploadSavings, type BulkProgress } from "@/lib/upload";
+import { reanalyseCollection } from "@/lib/reanalyse";
 import { useIsAdmin } from "@/lib/roles";
 
 export const Route = createFileRoute("/collections")({
@@ -283,6 +284,43 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
     }
   }
 
+  /**
+   * Reads every photograph in this event again.
+   *
+   * The photographs are not touched and nothing is re-uploaded; only the face
+   * records are rewritten. It runs in this browser, so the tab has to stay
+   * open, and it can be left half-done safely: a photograph is described by one
+   * model or the other, never by both.
+   */
+  async function reanalyse() {
+    const ok = await ask({
+      title: `Read all ${formatCount(list.length, "photo")} again?`,
+      body:
+        "Every photograph is analysed again with the current recogniser. Nothing is " +
+        "uploaded and no photograph changes. Keep this tab open until it finishes.",
+      confirmLabel: "Re-analyse",
+    });
+    if (!ok) return;
+
+    try {
+      const r = await reanalyseCollection({
+        collectionId,
+        onProgress: (p) => setProgress({ ...p }),
+      });
+      const failedNote = r.failed > 0 ? `, ${r.failed} failed` : "";
+      toast.success(
+        `Re-analysed ${formatCount(r.processed, "photo")} · ${formatCount(r.faces, "face")} searchable${failedNote}`,
+      );
+      if (r.firstError) toast.error(r.firstError);
+      qc.invalidateQueries({ queryKey: ["photos", collectionId] });
+      qc.invalidateQueries({ queryKey: ["collections"] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not re-analyse this event");
+    } finally {
+      setProgress(null);
+    }
+  }
+
   const list = photos.data ?? [];
   const grid: GridPhoto[] = list.map(toGridPhoto);
 
@@ -304,13 +342,26 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
             e.target.value = "";
           }}
         />
-        <GlassButton
-          icon={<ImagePlus className="size-4" />}
-          onClick={() => inputRef.current?.click()}
-          disabled={!!progress}
-        >
-          Add photos
-        </GlassButton>
+        <div className="flex items-center gap-2">
+          {/* Reading every photograph again with the current recogniser.
+              Needed once after the recogniser changes, because a face record
+              only means anything to the model that wrote it. */}
+          <GlassButton
+            variant="quiet"
+            icon={<RefreshCw className="size-4" />}
+            onClick={reanalyse}
+            disabled={!!progress}
+          >
+            Re-analyse
+          </GlassButton>
+          <GlassButton
+            icon={<ImagePlus className="size-4" />}
+            onClick={() => inputRef.current?.click()}
+            disabled={!!progress}
+          >
+            Add photos
+          </GlassButton>
+        </div>
       </div>
 
       {/* Appears only with a selection, so the default view stays uncluttered. */}

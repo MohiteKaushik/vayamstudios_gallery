@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { GlassButton } from "@/components/ui-kit";
 import { enrolFace } from "@/lib/enroll";
+import { onEngineProgress } from "@/lib/face";
 
 /**
  * Asking for a reference photo at the moment it is first needed.
@@ -25,8 +26,27 @@ export function FaceEnrolSheet({
   onDone: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  // The recogniser is about 16 MB and downloads the first time anyone uses it.
+  // On event wifi that is a real wait, and a button that says nothing for
+  // twenty seconds is a button people press again.
+  const [downloaded, setDownloaded] = useState<{ loaded: number; total: number } | null>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
   const libraryRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    void onEngineProgress((loaded, total) => {
+      if (!cancelled) setDownloaded(total > 0 && loaded < total ? { loaded, total } : null);
+    }).then((off) => {
+      if (cancelled) off();
+      else stop = off;
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
@@ -100,7 +120,11 @@ export function FaceEnrolSheet({
             icon={<Camera className="size-4" />}
             onClick={() => cameraRef.current?.click()}
           >
-            {busy ? "Analysing…" : "Take a photo"}
+            {downloaded
+              ? `Getting ready… ${Math.round((downloaded.loaded / downloaded.total) * 100)}%`
+              : busy
+                ? "Looking for your face…"
+                : "Take a photo"}
           </GlassButton>
           <GlassButton
             full

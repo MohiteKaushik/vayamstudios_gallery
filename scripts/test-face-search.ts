@@ -305,15 +305,24 @@ console.log("\n=== 7. the percentage a member is shown ===");
   // curve fixed to the measured distances, so it says the same thing about a
   // photograph wherever the threshold is set.
   const at = (d: number) => Math.round(confidenceFor(d) * 100);
-  console.log(`    0.00 ${at(0)}%   0.10 ${at(0.1)}%   0.20 ${at(0.2)}%   0.35 ${at(0.35)}%   0.46 ${at(0.46)}%   0.66 ${at(0.66)}%`);
+  console.log(`    0.00 ${at(0)}%   0.20 ${at(0.2)}%   0.39 ${at(0.39)}%   0.50 ${at(0.5)}%   0.60 ${at(0.6)}%   0.90 ${at(0.9)}%`);
 
+  // The anchors are cosine distances measured on the three live collections
+  // through the InsightFace pack. 0.39 was the furthest true match in the event
+  // collection, 0.60 the nearest genuine stranger seen anywhere, and 0.90 where
+  // two unrelated faces sit.
   check("an identical face reads near certain", at(0) >= 95, `${at(0)}%`);
   check(
-    "the distance where the first real stranger appeared reads like a coin toss",
-    at(0.35) >= 35 && at(0.35) <= 55,
-    `${at(0.35)}%`,
+    "the furthest true match still reads like a match",
+    at(0.39) >= 70,
+    `${at(0.39)}%`,
   );
-  check("where two different people sit reads very low", at(0.66) <= 10, `${at(0.66)}%`);
+  check(
+    "the nearest genuine stranger reads like a doubt, not a match",
+    at(0.6) >= 30 && at(0.6) <= 55,
+    `${at(0.6)}%`,
+  );
+  check("where two unrelated faces sit reads very low", at(0.9) <= 10, `${at(0.9)}%`);
 
   let monotone = true;
   for (let d = 0; d < 1.4; d += 0.01) {

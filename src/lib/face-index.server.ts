@@ -289,6 +289,28 @@ export type SearchOutcome = {
 
 type Confirmed = { faceId: string; photoId: string; distance: number; hops: number };
 
+/**
+ * What Vectorize calls "score" is not a distance on a cosine index.
+ *
+ * On a euclidean index the score is the distance and smaller is closer. On a
+ * cosine index it is the similarity: 1 is the same vector, 0 unrelated, -1
+ * opposite, and BIGGER is closer. Everything downstream of here compares
+ * against a threshold expecting the first meaning.
+ *
+ * Getting that backwards does not fail, it inverts: a face searching for itself
+ * scores 1.0, which is above the threshold, so it is thrown away, while every
+ * unrelated face scores near 0 and is kept. The selftest caught it exactly that
+ * way, reporting that a face taken straight out of the index could not find its
+ * own photograph while returning twenty-three strangers.
+ *
+ * So the conversion happens here, once, at the only place scores enter the
+ * module, and everything after it is a cosine distance in the same units as
+ * MATCH_MAX_DISTANCE.
+ */
+function toDistance(score: number): number {
+  return 1 - score;
+}
+
 /** Runs every shard of a collection against one probe, in a single wave. */
 async function queryAllShards(
   index: VectorizeIndex,
@@ -304,7 +326,7 @@ async function queryAllShards(
         returnValues: false,
         returnMetadata: "none",
       });
-      return r.matches;
+      return r.matches.map((m) => ({ id: m.id, score: toDistance(m.score) }));
     }),
   );
 }

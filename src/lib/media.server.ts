@@ -240,7 +240,7 @@ export function mediaUrl(cid: string, photoId: string, kind: "p" | "t" = "p"): s
 export const facesKey = (cid: string, photoId: string) => `meta/faces/${cid}/${photoId}`;
 
 /** Length of a face-api descriptor. A different length means a different model. */
-export const DESCRIPTOR_DIM = 128;
+export const DESCRIPTOR_DIM = 512;
 
 /** Beyond this in one frame it is a crowd shot, and the tail is not worth storing. */
 export const MAX_FACES_PER_PHOTO = 64;

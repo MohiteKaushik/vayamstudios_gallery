@@ -1,14 +1,12 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layers, UserRound } from "lucide-react";
-import { useEffect } from "react";
 import { AppShell } from "@/components/AppShell";
 import { MembersPanel } from "@/components/MembersPanel";
 import { EventShowcase } from "@/components/EventShowcase";
 import { GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
 import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/auth-gate";
-import { loadEngine } from "@/lib/face";
 import { formatCount } from "@/lib/images";
 import { useIsAdmin } from "@/lib/roles";
 
@@ -45,9 +43,6 @@ function Home({ userId }: { userId: string }) {
     queryFn: () => api.listCollections().then((c) => c.slice(0, 6)),
   });
 
-  useEffect(() => {
-    loadEngine().catch(() => {});
-  }, []);
 
   if (profile.isLoading || isAdmin.isLoading) {
     return (

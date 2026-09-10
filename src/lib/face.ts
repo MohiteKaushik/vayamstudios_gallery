@@ -1,80 +1,96 @@
 /**
- * Face recognition engine.
+ * Face recognition, on the member's own device.
  *
- * Runs entirely on the user's device: detection, 128-d embedding generation and
- * embedding comparison. No image or biometric data is sent to a third party.
+ * Detection, embedding and comparison all happen in the browser. No photograph
+ * and no biometric data is sent anywhere; the server only ever receives the
+ * numbers, and the search runs against those.
  *
- * The public surface below (`detectFaces`, `detectFacesThorough`, `compare`,
- * `MATCH_MAX_DISTANCE`) is intentionally provider-agnostic, so a server-side or
- * third-party provider can be swapped in behind these functions without
- * touching any UI code.
+ * The models live in face-engine.ts and the arithmetic in insightface.ts. This
+ * file is what sits on top: how many times to look at one photograph, how to
+ * merge what the passes found, and how to compare the results.
  *
  * ON FINDING FACES AT ALL
  *
  * The order of failure in a photo gallery is: a face is missed by the detector,
  * or it is detected too small to embed reliably, or it is embedded but at an
- * angle no single threshold reaches. Only the third of those is a matching
- * problem. The first two are detection problems, and no amount of clever
- * searching recovers a face that was never in the index.
+ * angle no single threshold reaches. Only the third is a matching problem. The
+ * first two are detection problems, and no amount of clever searching recovers
+ * a face that was never in the index.
  *
- * Event photography makes the first two the common case. A 6000px frame scaled
- * to a single 1024px pass turns a person standing a few metres back into a
- * 30px face: below the size where the embedding means anything, so it is
- * dropped before matching begins. `detectFacesThorough` exists for that, and
- * looks at each photo several times over.
+ * Event photography makes the first two the common case. A 6000px frame handed
+ * to a detector that works at 640px turns a guest standing a few metres back
+ * into a dozen pixels, well below the size where an embedding means anything.
+ * `detectFacesThorough` exists for that, and looks at each photograph several
+ * times over: whole, mirrored, and in overlapping tiles at full resolution.
  */
 
 // Explicit .ts extension so the test scripts can run this module directly
 // under node --experimental-strip-types. Vite resolves it unchanged.
 import { downscale, mirror } from "./images.ts";
+import { cosineDistance, EMBEDDING_DIM, type Box } from "./insightface.ts";
 
-const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model";
+export type { Box };
+
+export type { DetectedFace, Source, EngineProgress } from "./face-engine.ts";
+import type { DetectedFace, Source } from "./face-engine.ts";
 
 /**
- * Euclidean distance threshold: how close a face must be to a member's own
- * reference before it is called the same person.
+ * The engine is loaded on demand, never at import time.
  *
- * Set from the photographs rather than from the library default of 0.6, by
- * pulling every descriptor out of the live collections, taking the face that
- * attracted the most others, and looking at the crops it returned in distance
- * order. In a collection of guests at one event, the first genuine stranger
- * appeared at 0.349 and several more by 0.36, all of them large, sharply
- * focused faces rather than distant ones that a size filter would have caught.
- * The nearest true match sat at 0.333. There is no gap between the two, only a
- * boundary, and 0.34 was where it fell.
- *
- * It was set to 0.10 for a day, at the studio’s instruction, and that is left
- * recorded here because the measurement is the useful part: at 0.10 nobody
- * found anything, which is what the numbers below predicted and what happened.
- * It is back at 0.34 while the descriptor itself is replaced, which is the only
- * change that actually moves both precision and recall at once.
- *
- * The 0.10 measurement, well inside that boundary,
- * after wrong people were still getting through at 0.34. What 0.10 means on
- * these photographs, measured across the live collections by using every face
- * in turn as a reference:
- *
- *   collection    references that find nothing    at 0.34
- *   demo                     33 of 33               20 of 33
- *   event                    60 of 72               55 of 72
- *   portraits                29 of 53               17 of 53
- *
- * At this distance a photograph matches a member only when it is very nearly
- * the same image, so most members will find nothing at all. That is the cost of
- * being certain with a 128-dimension descriptor, and it was chosen knowingly.
- * Raising this one number is the whole of the change if that proves too strict.
- *
- * The consequence is deliberate and worth stating plainly: this is tight enough
- * that a member photographed from an unusual angle will be missed. That was the
- * instruction. Guests being shown photographs of other people is the failure
- * that matters, and at 0.46 it happened on every scan.
- *
- * It follows that this alone cannot reach a turned head, and neither can
- * widening it, because strangers arrive long before the profile does. See the
- * note in face-index.server.ts for why the graph expansion cannot rescue that
- * either on photographs like these.
+ * face-engine.ts pulls in onnxruntime-web, which wants a browser. This module
+ * is also read by the test suites and, through the constants below, by the
+ * Worker, and a static import would drag a WebAssembly runtime into both. The
+ * dynamic import keeps the arithmetic usable everywhere and the models where
+ * they belong.
  */
-export const MATCH_MAX_DISTANCE = 0.34;
+const engine = () => import("./face-engine.ts");
+
+/** Downloads and prepares the models. Safe to call repeatedly; loads once. */
+export async function loadEngine() {
+  return (await engine()).loadEngine();
+}
+
+/** Subscribes to model download progress. Returns an unsubscribe function. */
+export async function onEngineProgress(fn: (loaded: number, total: number) => void) {
+  return (await engine()).onEngineProgress(fn);
+}
+
+/** One detection pass over one image, with an embedding for every face found. */
+export async function detectFaces(
+  source: Source,
+  minConfidence?: number,
+): Promise<DetectedFace[]> {
+  const e = await engine();
+  return e.detectFaces(source, minConfidence ?? e.DETECT_MIN_CONFIDENCE);
+}
+
+/**
+ * How close a face must be to a member's own reference to be called them.
+ *
+ * Cosine distance between two unit-length ArcFace embeddings: 0 is the same
+ * photograph, 1 is unrelated, 2 is opposite. Not Euclidean distance, and not
+ * comparable to the numbers this project used before September 2026, when the
+ * descriptor was face-api's 128-dimension ResNet-34.
+ *
+ * Set by rendering the crops in distance order from the three live collections
+ * and looking at them, which is the only method that has ever given an honest
+ * answer here:
+ *
+ *   collection    same person up to    nearest different person
+ *   demo                      0.169                      0.849
+ *   event                     0.385                      0.598
+ *   portraits                 0.615    none within the 23 nearest
+ *
+ * 0.5 sits inside the one narrow gap, between the event collection's furthest
+ * true match at 0.385 and its nearest stranger at 0.598. It is also stricter
+ * than InsightFace's own guidance, which puts 1:1 operating points at 0.55 to
+ * 0.70 in this units.
+ *
+ * The old descriptor had no such gap at any threshold: a stranger reached a
+ * member at 0.349 while that member's own profile shot sat past 0.8. That is
+ * what changed, and it is the reason a number this loose is now the safe one.
+ */
+export const MATCH_MAX_DISTANCE = 0.5;
 
 /**
  * Long edge each detection pass sees.
@@ -89,81 +105,11 @@ export const ANALYSIS_MAX_EDGE = 2048;
 /** Faces smaller than this (px, on the analysis canvas) give unreliable embeddings. */
 export const MIN_FACE_PX = 60;
 
-/**
- * Detector confidence floor. Below the library's usual 0.5 because a turned or
- * partly shadowed head scores lower than a posed one, and those are exactly the
- * faces being lost. A spurious detection costs one unmatched vector; a missed
- * real face costs a photo the member never sees.
- */
-export const DETECT_MIN_CONFIDENCE = 0.35;
-
 /** Boxes overlapping more than this are treated as the same face across passes. */
 const DEDUPE_IOU = 0.35;
 
 /** Fraction each tile overlaps its neighbour, so a face on a seam is not cut in half. */
 const TILE_OVERLAP = 0.18;
-
-type FaceApi = typeof import("@vladmandic/face-api");
-let apiPromise: Promise<FaceApi> | null = null;
-
-export function loadEngine(): Promise<FaceApi> {
-  if (!apiPromise) {
-    apiPromise = (async () => {
-      const faceapi = (await import(
-        "@vladmandic/face-api/dist/face-api.esm.js"
-      )) as unknown as FaceApi;
-      const tf = faceapi.tf as unknown as {
-        setBackend: (b: string) => Promise<boolean>;
-        ready: () => Promise<void>;
-      };
-      await tf.setBackend("webgl").catch(() => tf.setBackend("cpu"));
-      await tf.ready();
-      await Promise.all([
-        faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-      ]);
-      return faceapi;
-    })().catch((e) => {
-      apiPromise = null;
-      throw e;
-    });
-  }
-  return apiPromise;
-}
-
-export type Box = { x: number; y: number; width: number; height: number };
-
-export type DetectedFace = {
-  descriptor: number[];
-  box: Box;
-  score: number;
-  /** Long edge of the crop this face was read from. Higher means a better embedding. */
-  readAtPx?: number;
-};
-
-/** One detection pass over one canvas. */
-export async function detectFaces(
-  input: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement,
-  minConfidence = DETECT_MIN_CONFIDENCE,
-) {
-  const faceapi = await loadEngine();
-  const results = await faceapi
-    .detectAllFaces(input as HTMLImageElement, new faceapi.SsdMobilenetv1Options({ minConfidence }))
-    .withFaceLandmarks()
-    .withFaceDescriptors();
-
-  return results.map<DetectedFace>((r) => ({
-    descriptor: Array.from(r.descriptor),
-    box: {
-      x: Math.round(r.detection.box.x),
-      y: Math.round(r.detection.box.y),
-      width: Math.round(r.detection.box.width),
-      height: Math.round(r.detection.box.height),
-    },
-    score: r.detection.score,
-  }));
-}
 
 /* -------------------------------------------------------------------------- */
 /*                          Multi-pass detection                              */
@@ -242,7 +188,8 @@ export async function detectFacesThorough(
   source: HTMLImageElement,
   options: ThoroughOptions = {},
 ): Promise<{ faces: DetectedFace[]; canvas: HTMLCanvasElement; passes: number }> {
-  const { mirrorPass = true, tilePass = true, minConfidence = DETECT_MIN_CONFIDENCE } = options;
+  const { mirrorPass = true, tilePass = true } = options;
+  const minConfidence = options.minConfidence ?? (await engine()).DETECT_MIN_CONFIDENCE;
 
   const base = downscale(source, ANALYSIS_MAX_EDGE);
   const canvas = base.canvas;
@@ -317,19 +264,21 @@ export async function detectFacesThorough(
 /*                              Comparison                                    */
 /* -------------------------------------------------------------------------- */
 
-/** Euclidean distance between two embeddings. Lower = more similar. */
+/**
+ * Cosine distance between two embeddings. Lower is more alike.
+ *
+ * ArcFace is trained with an angular margin, so identity lives in the direction
+ * of the vector and nothing else. Its length carries image quality, which is
+ * why every embedding is normalised on the way out of the model and why the
+ * comparison here is an angle rather than a straight-line distance.
+ */
 export function distance(a: number[], b: number[]) {
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) {
-    const d = (a[i] ?? 0) - (b[i] ?? 0);
-    sum += d * d;
-  }
-  return Math.sqrt(sum);
+  return cosineDistance(a, b);
 }
 
-/** 0..1 confidence, used for the optional match-details panel only. */
+/** 0..1, where 1 is the same face. Only for showing a member a number. */
 export function similarity(a: number[], b: number[]) {
-  return Math.max(0, Math.min(1, 1 - distance(a, b) / 1.1));
+  return Math.max(0, Math.min(1, 1 - distance(a, b)));
 }
 
 /** Closest of `faces` to a single reference. */
@@ -427,17 +376,18 @@ export function pickDiverseReferences(
 /** How many reference embeddings a member may accumulate. */
 export const MAX_REFERENCES = 8;
 
-/** Length of one face-api descriptor. */
-export const DESCRIPTOR_DIM = 128;
+/** Length of one ArcFace embedding. */
+export const DESCRIPTOR_DIM = EMBEDDING_DIM;
 
 /**
  * Several references stored in the one array column the schema already has.
  *
- * A member needs more than one reference to be found at an angle, but
- * face_profiles holds a single row per person and the app reads it with
- * maybeSingle(). Concatenating the references keeps both facts true and needs
- * no migration. A legacy row of exactly one descriptor unpacks to one
- * reference, so existing profiles keep working untouched.
+ * A member needs more than one reference to be found at an angle, and the
+ * record holds a single list per person. Concatenating the references keeps
+ * both facts true. Note that a profile stored before September 2026 holds
+ * 128-number descriptors from the old model and will not unpack at 512; those
+ * members are asked for a new reference photo rather than silently matched
+ * against nothing.
  */
 export function packReferences(references: number[][]): number[] {
   return references.flat();
