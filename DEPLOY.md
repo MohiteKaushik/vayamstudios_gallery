@@ -106,6 +106,33 @@ still safe in R2 and can be put back into the index without re-uploading:
 curl -X POST https://<your-worker>/api/collections/<id>/reindex
 ```
 
+## After changing the recogniser
+
+A face record in R2 holds the numbers one model produced, and those numbers
+only mean anything to that model. When the recogniser changes, every stored
+face has to be read again.
+
+Open each event on the Live Event tab and press **Re-analyse**. It fetches each
+photograph back from R2, looks at it again in your browser, and rewrites the
+face record. Nothing is re-uploaded and no photograph changes. Keep the tab open
+until it finishes; stopping half way is safe, and pressing it again picks up
+where it left off.
+
+Members who enrolled before the change are asked for a new reference photo the
+next time they press Find me, rather than being silently matched against
+nothing.
+
+Check it worked:
+
+```sh
+curl -X POST https://<your-worker>/api/collections/<id>/selftest
+```
+
+It should say the search is working, and report a median distance near 0.9. A
+median far below that means the collection still holds records from the old
+recogniser.
+
+
 ## Local development is slower than production, deliberately
 
 `npm run dev` reaches the real R2 bucket and the real Vectorize index across the
