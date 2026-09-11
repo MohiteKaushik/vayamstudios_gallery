@@ -6,8 +6,19 @@ Point it at the folder the camera's card empties into. Every new photograph
 that appears is uploaded to one event, once, and then remembered so that
 restarting the script does not upload it again.
 
-    pip install requests pillow
+    pip install requests pillow rawpy pillow-heif
     python watch_and_upload.py
+
+WHAT IT CAN READ
+
+JPEG, PNG, WebP, AVIF, TIFF, BMP and GIF out of the box. HEIC, which is what an
+iPhone writes, if pillow-heif is installed. Raw files from every common camera,
+ARW and CR3 and NEF and the rest, if rawpy is installed. Everything is converted
+to JPEG before it is uploaded, so the gallery only ever sees one format.
+
+A camera set to raw plus JPEG writes two files for one press of the shutter.
+Both are found, and only one is uploaded: the JPEG, because it is the picture
+the camera already developed and it opens in a fraction of the time.
 
 It will ask for whatever it needs the first time and write the answers to
 watcher.json beside itself, except the password, which is never written down.
@@ -56,12 +67,62 @@ try:
 except ImportError:
     sys.exit("This needs the Pillow package:  pip install requests pillow")
 
+# HEIC and HEIF, which is what an iPhone writes by default. Optional, because
+# the camera at an event is usually not a phone, and a missing decoder should
+# cost those files rather than the whole run.
+try:
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+    HEIF_READY = True
+except ImportError:
+    HEIF_READY = False
+
+# Raw files: ARW, CR2, CR3, NEF and the rest. Pillow cannot read any of them,
+# so this is LibRaw through rawpy. Also optional, and the run says so clearly
+# the first time it meets a raw file it cannot open.
+try:
+    import rawpy
+
+    RAW_READY = True
+except ImportError:
+    RAW_READY = False
+
 
 HERE = Path(__file__).resolve().parent
 SETTINGS_FILE = HERE / "watcher.json"
 UPLOADED_FILE = HERE / "uploaded.json"
 
-SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".heic", ".heif"}
+# What a camera or a phone might drop into the folder.
+#
+# Everything is converted to JPEG before it is uploaded, so this list is about
+# what can be READ, not what the gallery stores. A photographer shooting raw
+# plus JPEG gets both files for one frame; the pairing below sends one of them.
+RAW_SUFFIXES = {
+    ".arw", ".srf", ".sr2",          # Sony
+    ".cr2", ".cr3", ".crw",          # Canon
+    ".nef", ".nrw",                  # Nikon
+    ".raf",                          # Fujifilm
+    ".orf",                          # Olympus and OM System
+    ".rw2",                          # Panasonic
+    ".pef", ".ptx",                  # Pentax
+    ".srw",                          # Samsung
+    ".dng",                          # Adobe, and many phones
+    ".3fr",                          # Hasselblad
+    ".erf",                          # Epson
+    ".kdc", ".dcr",                  # Kodak
+    ".mrw",                          # Minolta
+    ".x3f",                          # Sigma
+    ".iiq",                          # Phase One
+    ".rwl",                          # Leica
+    ".raw",
+}
+HEIF_SUFFIXES = {".heic", ".heif"}
+PLAIN_SUFFIXES = {
+    ".jpg", ".jpeg", ".jpe", ".png", ".webp", ".avif",
+    ".tif", ".tiff", ".bmp", ".gif",
+}
+SUFFIXES = RAW_SUFFIXES | HEIF_SUFFIXES | PLAIN_SUFFIXES
 
 # Matches STORE_MAX_EDGE and THUMB_MAX_EDGE in the app. Uploading the camera's
 # full frame would waste the card's worth of bandwidth on a phone hotspot, and
@@ -93,6 +154,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--email", help="Operator email. Asked for if not given.")
     p.add_argument("--event", help="Event name or id to upload into.")
     p.add_argument("--url", help="Gallery address.")
+    p.add_argument(
+        "--check",
+        action="store_true",
+        help="Open every file in the folder and report what can be read. Uploads nothing.",
+    )
     p.add_argument(
         "--once",
         action="store_true",
@@ -191,19 +257,91 @@ def choose_collection(
         print("  Pick one of the numbers listed.")
 
 
+def open_raw(path: Path) -> Image.Image:
+    """
+    Reads a raw file, preferring the preview the camera already made.
+
+    Every raw file carries a JPEG preview, usually at or near full size, which
+    the camera produced with its own processing. Pulling that out takes
+    milliseconds. Demosaicing the sensor data instead takes a second or more per
+    frame and, for our purposes, looks no better: the gallery shrinks it to 2048
+    pixels and a face detector runs over it.
+
+    So the preview is the fast path and a full decode is the fallback, for the
+    rare file whose preview is missing or postage-stamp sized.
+    """
+    if not RAW_READY:
+        raise RuntimeError(
+            f"{path.suffix.upper().lstrip('.')} files need the rawpy package:  pip install rawpy"
+        )
+
+    with rawpy.imread(str(path)) as raw:
+        try:
+            thumb = raw.extract_thumb()
+        except (rawpy.LibRawNoThumbnailError, rawpy.LibRawUnsupportedThumbnailError):
+            thumb = None
+
+        if thumb is not None:
+            if thumb.format == rawpy.ThumbFormat.JPEG:
+                from io import BytesIO
+
+                preview = Image.open(BytesIO(thumb.data))
+                # A tiny preview is worse than decoding properly. Anything at
+                # least as wide as we store is plenty.
+                if max(preview.size) >= STORE_MAX_EDGE:
+                    return ImageOps.exif_transpose(preview)
+            elif thumb.format == rawpy.ThumbFormat.BITMAP:
+                preview = Image.fromarray(thumb.data)
+                if max(preview.size) >= STORE_MAX_EDGE:
+                    return preview
+
+        # No usable preview: develop the sensor data. Camera white balance,
+        # because the whole point is that it looks like what the photographer
+        # saw on the back of the camera.
+        rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False, output_bps=8)
+        return Image.fromarray(rgb)
+
+
+def open_image(path: Path) -> Image.Image:
+    """Opens anything in SUFFIXES, whatever it takes."""
+    suffix = path.suffix.lower()
+
+    if suffix in RAW_SUFFIXES:
+        return open_raw(path)
+
+    if suffix in HEIF_SUFFIXES and not HEIF_READY:
+        raise RuntimeError(
+            "HEIC files need the pillow-heif package:  pip install pillow-heif"
+        )
+
+    return ImageOps.exif_transpose(Image.open(path))
+
+
 def prepare(path: Path, max_edge: int) -> tuple[bytes, int, int]:
     """Rotates by EXIF, shrinks to fit, and re-encodes as JPEG."""
-    with Image.open(path) as img:
-        img = ImageOps.exif_transpose(img)
-        img = img.convert("RGB")
+    from io import BytesIO
+
+    img = open_image(path)
+    try:
+        # A PNG with transparency, or a raw developed to 16 bits, has to become
+        # plain RGB before it can be a JPEG. Transparency flattens onto white
+        # rather than black, which is what a photograph expects.
+        if img.mode in ("RGBA", "LA", "P"):
+            flattened = Image.new("RGB", img.size, (255, 255, 255))
+            converted = img.convert("RGBA")
+            flattened.paste(converted, mask=converted.split()[-1])
+            img = flattened
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
         img.thumbnail((max_edge, max_edge), Image.LANCZOS)
         width, height = img.size
-        from io import BytesIO
 
         buffer = BytesIO()
         img.save(buffer, format="JPEG", quality=JPEG_QUALITY, optimize=True)
         return buffer.getvalue(), width, height
-
+    finally:
+        img.close()
 
 def upload(session: requests.Session, base: str, s: Settings, path: Path) -> str:
     full, width, height = prepare(path, STORE_MAX_EDGE)
@@ -237,6 +375,87 @@ def upload(session: requests.Session, base: str, s: Settings, path: Path) -> str
     return photo_id
 
 
+def readable_formats() -> list[str]:
+    """What this machine can actually open, said plainly before the event starts."""
+    names = ["JPEG", "PNG", "WebP", "AVIF", "TIFF", "BMP", "GIF"]
+    if HEIF_READY:
+        names.append("HEIC")
+    if RAW_READY:
+        names.append("raw (ARW, CR2, CR3, NEF, DNG and others)")
+    return names
+
+
+def pick_files(folder: Path, done: dict[str, str]) -> list[Path]:
+    """
+    What to upload next, with raw-plus-JPEG pairs resolved to one file.
+
+    A camera set to raw plus JPEG writes two files for one press of the shutter:
+    DSC01234.ARW and DSC01234.JPG. They are the same photograph. Uploading both
+    puts every frame in the gallery twice, and every guest finds themselves
+    twice.
+
+    When both are there, the JPEG wins. It is the picture the camera already
+    developed, it opens in a fraction of the time, and it needs no extra
+    package on whichever laptop is doing this.
+    """
+    files = [
+        p for p in folder.iterdir()
+        if p.is_file() and p.suffix.lower() in SUFFIXES
+    ]
+
+    developed = {
+        p.stem.lower() for p in files if p.suffix.lower() in PLAIN_SUFFIXES | HEIF_SUFFIXES
+    }
+    chosen = [
+        p for p in files
+        if not (p.suffix.lower() in RAW_SUFFIXES and p.stem.lower() in developed)
+    ]
+    return sorted(p for p in chosen if p.name not in done)
+
+
+def check_folder(folder: Path) -> int:
+    """
+    Opens everything in the folder and says what happened, uploading nothing.
+
+    This is the thing to run before an event, with a few real files from the
+    camera that will be used on the day. It answers the only question that
+    matters in advance: can this machine read what that camera writes? Finding
+    out at the event, with a card full of ARW files and no rawpy, is expensive.
+    """
+    files = sorted(p for p in folder.iterdir() if p.is_file())
+    if not files:
+        print(f"There is nothing in {folder}")
+        return 0
+
+    chosen = {p.name for p in pick_files(folder, {})}
+    failures = 0
+
+    print(f"\nCan read: {', '.join(readable_formats())}")
+    print(f"\n{len(files)} file(s) in {folder}\n")
+
+    for path in files:
+        suffix = path.suffix.lower()
+        if suffix not in SUFFIXES:
+            print(f"  ignored   {path.name}  (not an image)")
+            continue
+        if path.name not in chosen:
+            print(f"  paired    {path.name}  (the developed copy is uploaded instead)")
+            continue
+        try:
+            data, width, height = prepare(path, STORE_MAX_EDGE)
+            print(f"  ok        {path.name}  -> {width}x{height}, {len(data) // 1024} KB")
+        except Exception as e:  # noqa: BLE001 - reporting every failure is the point
+            failures += 1
+            print(f"  CANNOT    {path.name}  -> {e}")
+
+    print()
+    if failures:
+        print(f"{failures} file(s) could not be read. Fix that before the event.")
+    else:
+        print("Everything here can be uploaded.")
+    return failures
+
+
 def settled(path: Path) -> bool:
     """True once the file has stopped growing, so it is finished copying."""
     try:
@@ -250,6 +469,16 @@ def settled(path: Path) -> bool:
 def main() -> None:
     args = parse_args()
     s = load_settings()
+
+    # Checking what can be read needs no account and no network, so it happens
+    # before any of the questions. Point it at a card from the camera that will
+    # be used on the day and it answers the one question worth answering early.
+    if args.check:
+        folder = Path(args.folder or s.folder or HERE).expanduser().resolve()
+        if not folder.is_dir():
+            raise SystemExit(f"There is no folder at {folder}")
+        raise SystemExit(1 if check_folder(folder) else 0)
+
     s.base_url = ask(
         "Gallery address",
         s.base_url or "https://vayamstudios-gallery.vayamdesigners.workers.dev",
@@ -271,6 +500,18 @@ def main() -> None:
     save_settings(s)
 
     done = load_uploaded()
+    print("\nCan read: " + ", ".join(readable_formats()))
+    if not RAW_READY or not HEIF_READY:
+        missing = []
+        if not RAW_READY:
+            missing.append("rawpy, for ARW, CR3, NEF and other raw files")
+        if not HEIF_READY:
+            missing.append("pillow-heif, for HEIC from iPhones")
+        print("Not installed: " + "; ".join(missing))
+        print("  pip install " + " ".join(
+            name for name, ok in (("rawpy", RAW_READY), ("pillow-heif", HEIF_READY)) if not ok
+        ))
+
     print(f"\nWatching {folder}")
     print(f"Uploading into '{s.collection_name}'")
     print(f"{len(done)} photo(s) already uploaded and will be skipped.")
@@ -283,10 +524,7 @@ def main() -> None:
 
     while True:
         try:
-            candidates = sorted(
-                p for p in folder.iterdir()
-                if p.is_file() and p.suffix.lower() in SUFFIXES and p.name not in done
-            )
+            candidates = pick_files(folder, done)
             for path in candidates:
                 if not settled(path):
                     continue

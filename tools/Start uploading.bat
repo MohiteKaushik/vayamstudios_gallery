@@ -22,11 +22,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo Checking the two packages it needs...
-python -m pip install --quiet --disable-pip-version-check requests pillow
+echo Checking the packages it needs...
+python -m pip install --quiet --disable-pip-version-check requests pillow rawpy pillow-heif
 if errorlevel 1 (
   echo.
-  echo Could not install requests and pillow. Check the internet connection.
+  echo Could not install what it needs. Check the internet connection.
   echo.
   pause
   exit /b 1
