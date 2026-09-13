@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { Check, CheckCheck, ChevronLeft, Copy, ImagePlus, Layers, Pencil, Plus, Radio, RefreshCw, ScanFace, Trash2, X } from "lucide-react";
+import { Check, CheckCheck, ChevronLeft, Copy, Image as ImageIcon, ImagePlus, Layers, Pencil, Plus, Radio, RefreshCw, ScanFace, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
@@ -24,9 +24,9 @@ export const Route = createFileRoute("/collections")({
   }),
   head: () => ({
     meta: [
-      { title: "Live Event | VAYAM Designers Gallery" },
+      { title: "Recent Event | VAYAM Designers Gallery" },
       { name: "description", content: "Find yourself in the photographs from the event." },
-      { property: "og:title", content: "Live Event | VAYAM Designers Gallery" },
+      { property: "og:title", content: "Recent Event | VAYAM Designers Gallery" },
       { property: "og:description", content: "Find yourself in the photographs from the event." },
     ],
   }),
@@ -87,7 +87,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
           onClick={() => navigate({ to: ".", search: { shared: undefined } })}
           className="press mb-5 inline-flex items-center gap-1 rounded-full text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <ChevronLeft className="size-4" /> Live Event
+          <ChevronLeft className="size-4" /> Recent Event
         </button>
         {isAdmin ? (
           <AdminCollection collectionId={shared} name={current?.name ?? "Collection"} />
@@ -103,7 +103,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <AppShell>
-      <h1 className="text-3xl font-semibold tracking-[-0.03em]">Live Event</h1>
+      <h1 className="text-3xl font-semibold tracking-[-0.03em]">Recent Event</h1>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
         {isAdmin
           ? "Create an event, then add the photos to it. Every face is indexed once so members can find themselves."
@@ -489,6 +489,27 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
             >
               Clear
             </GlassButton>
+            {selected.size === 1 && (
+              <GlassButton
+                variant="ghost"
+                size="sm"
+                icon={<ImageIcon className="size-4" />}
+                onClick={() => {
+                  const [photoId] = [...selected];
+                  void api
+                    .setHomeCover(collectionId, photoId!)
+                    .then(() => {
+                      qc.invalidateQueries({ queryKey: ["home-cover"] });
+                      toast.success("Home cover updated", {
+                        description: "It now shows, blurred, behind Open recent event.",
+                      });
+                    })
+                    .catch((e) => toast.error(e instanceof Error ? e.message : "Could not set the cover"));
+                }}
+              >
+                Use as home cover
+              </GlassButton>
+            )}
             <GlassButton
               variant="danger"
               size="sm"

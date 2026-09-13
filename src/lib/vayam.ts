@@ -74,6 +74,7 @@ export const events: VayamEvent[] = [
   // One event run under both names, so it reads as a single line rather than
   // as two entries a visitor would take for separate pieces of work.
   { name: "District 150-Ioniq Connect" },
+  { name: "TTPOC CARREER NEXUS 3.0" },
 ];
 
 /** The full title as it should read on screen. */

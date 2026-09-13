@@ -276,6 +276,45 @@ console.log("\n=== 8. saving fingerprints through the API ===");
   );
   const photos = ((await listed!.json()) as { photos: { id: string; fingerprint: string | null }[] }).photos;
   check("the photo listing returns fingerprints", photos.length === 2 && photos.every((p) => p.fingerprint === good));
+
+  console.log("\n=== 9. the home cover ===");
+  const coverCall = async (cookie: string, method: string, body?: unknown) => {
+    const res = await handleApiRequest(
+      new Request("https://gallery.test/api/site/cover", {
+        method,
+        headers: { cookie, ...(body ? { "content-type": "application/json" } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      }),
+      env as never,
+    );
+    return { status: res!.status, data: (await res!.json()) as { coverUrl?: string | null } };
+  };
+  const viewer = await createMember(bucket as never, {
+    email: "viewer@dup.test", password: "password2026", fullName: "Viewer", phone: "9876543211", role: "member",
+  });
+  if (!viewer.ok) throw new Error("could not create the viewer account");
+  const viewerCookie = sessionCookieHeader(await createSessionToken(viewer.member.id, SECRET)).split(";")[0]!;
+
+  const empty = await coverCall(viewerCookie, "GET");
+  check("with no cover chosen, members get none", empty.status === 200 && empty.data.coverUrl === null);
+  const denied = await coverCall(viewerCookie, "PUT", { collectionId: cid, photoId: p1 });
+  check("a member cannot choose the cover", denied.status === 403, `${denied.status}`);
+  const badId = await coverCall(admin, "PUT", { collectionId: cid, photoId: "../../meta/member/x" });
+  check("an unsafe id is refused", badId.status === 400, `${badId.status}`);
+  const missing = await coverCall(admin, "PUT", { collectionId: cid, photoId: crypto.randomUUID() });
+  check("a photo that does not exist is refused", missing.status === 404, `${missing.status}`);
+  const set = await coverCall(admin, "PUT", { collectionId: cid, photoId: p1 });
+  check("an admin can choose a photo as the cover", set.status === 200 && set.data.coverUrl === `/media/t/${cid}/${p1}`, JSON.stringify(set.data));
+  const seen = await coverCall(viewerCookie, "GET");
+  check("members then see that cover", seen.data.coverUrl === `/media/t/${cid}/${p1}`);
+  const eventRecord = store.get(`meta/collection/${cid}`)!;
+  store.delete(`meta/collection/${cid}`);
+  const binned = await coverCall(viewerCookie, "GET");
+  check("an event in the recycle bin shows no cover", binned.data.coverUrl === null);
+  store.set(`meta/collection/${cid}`, eventRecord);
+  const cleared = await coverCall(admin, "DELETE");
+  const after = await coverCall(viewerCookie, "GET");
+  check("an admin can remove the cover", cleared.status === 200 && after.data.coverUrl === null);
 }
 
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"}`);

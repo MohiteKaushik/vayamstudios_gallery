@@ -363,6 +363,17 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
     return json({ error: "Not found" }, 404);
   }
 
+  if (head === "site" && rest[0] === "cover") {
+    if (request.method === "GET") return json(await readHomeCover(env));
+    if (!isAdmin) return json({ error: "Admins only" }, 403);
+    if (request.method === "PUT") return setHomeCover(request, env);
+    if (request.method === "DELETE") {
+      await env.PHOTOS.delete(HOME_COVER_KEY);
+      return json({ coverUrl: null, collectionId: null, photoId: null });
+    }
+    return json({ error: "Method not allowed" }, 405);
+  }
+
   if (head === "members" && request.method === "GET") {
     if (!isAdmin) return json({ error: "Admins only" }, 403);
     return listMembers(env);
@@ -494,6 +505,48 @@ async function unindexedPhotos(
 
   const pending = [...photos].filter((id) => !faces.has(id));
   return { photoIds: pending, total: photos.size, indexed: faces.size };
+}
+
+const HOME_COVER_KEY = "site/home-cover.json";
+
+type HomeCover = { coverUrl: string | null; collectionId: string | null; photoId: string | null };
+
+/**
+ * The photo behind "Open recent event" on the home page. If the photo or its
+ * event has since gone to the recycle bin, the card simply shows no image.
+ */
+async function readHomeCover(env: MediaEnv): Promise<HomeCover> {
+  const none: HomeCover = { coverUrl: null, collectionId: null, photoId: null };
+  const record = await readJson<{ collectionId: string; photoId: string }>(env.PHOTOS, HOME_COVER_KEY);
+  if (!record || !isSafeId(record.collectionId) || !isSafeId(record.photoId)) return none;
+  const [event, photo] = await Promise.all([
+    env.PHOTOS.head(collectionKey(record.collectionId)),
+    env.PHOTOS.head(photoMetaKey(record.collectionId, record.photoId)),
+  ]);
+  if (!event || !photo) return none;
+  return {
+    coverUrl: mediaUrl(record.collectionId, record.photoId, "t"),
+    collectionId: record.collectionId,
+    photoId: record.photoId,
+  };
+}
+
+async function setHomeCover(request: Request, env: MediaEnv): Promise<Response> {
+  let body: { collectionId?: unknown; photoId?: unknown };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Malformed body" }, 400);
+  }
+  const { collectionId, photoId } = body;
+  if (typeof collectionId !== "string" || typeof photoId !== "string" || !isSafeId(collectionId) || !isSafeId(photoId)) {
+    return json({ error: "Bad id" }, 400);
+  }
+  if (!(await env.PHOTOS.head(photoMetaKey(collectionId, photoId)))) {
+    return json({ error: "No such photo" }, 404);
+  }
+  await writeJson(env.PHOTOS, HOME_COVER_KEY, { collectionId, photoId, setAt: Date.now() });
+  return json(await readHomeCover(env));
 }
 
 /**

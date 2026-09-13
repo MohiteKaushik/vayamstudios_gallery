@@ -11,6 +11,7 @@ import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/auth-gate";
 import { formatCount } from "@/lib/images";
 import { useIsAdmin } from "@/lib/roles";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/home")({
   head: () => ({
@@ -42,6 +43,7 @@ function Home({ userId }: { userId: string }) {
   const sharedCollections = useQuery({
     queryKey: ["collections"],
     retry: false,
+    enabled: isAdmin.data === true,
     queryFn: () => api.listCollections().then((c) => c.slice(0, 6)),
   });
 
@@ -59,7 +61,7 @@ function Home({ userId }: { userId: string }) {
   const collectionList = (
     <section className="mt-12">
       <h2 className="mb-4 text-sm font-medium uppercase tracking-[0.12em] text-muted-foreground">
-        {admin ? "Your events" : "Live Event"}
+        Your events
       </h2>
       {sharedCollections.isLoading ? (
         <Shimmer className="h-16" />
@@ -87,7 +89,7 @@ function Home({ userId }: { userId: string }) {
       ) : (
         <p className="text-sm text-muted-foreground">
           {admin
-            ? "No events yet. Create one from the Live Event tab and upload photos into it."
+            ? "No events yet. Create one from the Recent Event tab and upload photos into it."
             : "Nothing has been published yet. New events will show up here."}
         </p>
       )}
@@ -98,16 +100,17 @@ function Home({ userId }: { userId: string }) {
     return (
       <AppShell>
         <section className="rise-in">
-          <h1 className="text-3xl font-semibold tracking-[-0.03em]">Live Event</h1>
+          <h1 className="text-3xl font-semibold tracking-[-0.03em]">Recent Event</h1>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
             Create an event, then upload the photos. Members see only the frames they appear in.
           </p>
           <Link to="/collections" search={{ shared: undefined }} className="mt-8 inline-flex">
             <GlassButton size="lg" icon={<Layers className="size-4" />}>
-              Open live event
+              Open recent event
             </GlassButton>
           </Link>
         </section>
+        <CoverSettings />
         {collectionList}
         <WaitingPanel />
         <RecycleBinPanel />
@@ -127,7 +130,6 @@ function Home({ userId }: { userId: string }) {
   return (
     <AppShell>
       <FaceCard />
-      {collectionList}
       <EventShowcase />
     </AppShell>
   );
@@ -150,12 +152,67 @@ function FaceCard() {
       </div>
 
       <Link to="/collections" search={{ shared: undefined }}>
-        <GlassCard interactive className="flex flex-col items-center px-6 py-14 text-center">
-          <Layers className="mb-5 size-8 text-muted-foreground" strokeWidth={1.4} />
-          <p className="text-lg font-medium tracking-[-0.02em]">Open live event</p>
-          <p className="mt-1 text-sm text-muted-foreground">Photos are published by the organisers</p>
-        </GlassCard>
+        <RecentEventCard />
       </Link>
+    </section>
+  );
+}
+
+function useHomeCover() {
+  return useQuery({ queryKey: ["home-cover"], retry: false, queryFn: api.homeCover });
+}
+
+/** The card that opens the event, over a blurred photo the admin chose. */
+function RecentEventCard() {
+  const cover = useHomeCover().data?.coverUrl;
+  return (
+    <GlassCard interactive className="relative isolate flex flex-col items-center overflow-hidden px-6 py-14 text-center">
+      {cover && (
+        <>
+          <img
+            src={cover}
+            alt=""
+            aria-hidden
+            className="absolute inset-0 -z-10 size-full scale-110 object-cover blur-md"
+          />
+          <div aria-hidden className="absolute inset-0 -z-10 bg-background/60" />
+        </>
+      )}
+      <Layers className={cn("mb-5 size-8", cover ? "text-foreground/80" : "text-muted-foreground")} strokeWidth={1.4} />
+      <p className="text-lg font-medium tracking-[-0.02em]">Open recent event</p>
+      <p className={cn("mt-1 text-sm", cover ? "text-foreground/80" : "text-muted-foreground")}>
+        Photos are published by the organisers
+      </p>
+    </GlassCard>
+  );
+}
+
+/** Admin: what members see at the top of their home page, and how to change it. */
+function CoverSettings() {
+  const qc = useQueryClient();
+  const cover = useHomeCover();
+  return (
+    <section className="mt-12">
+      <h2 className="mb-1 text-sm font-medium uppercase tracking-[0.12em] text-muted-foreground">Home cover</h2>
+      <p className="mb-4 text-sm text-muted-foreground">
+        {cover.data?.coverUrl
+          ? "Members see this at the top of their home page. To change it, open an event, select one photo and press Use as home cover."
+          : "No cover yet. Open an event, select one photo and press Use as home cover."}
+      </p>
+      <RecentEventCard />
+      {cover.data?.coverUrl && (
+        <div className="mt-3 flex justify-end">
+          <GlassButton
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              void api.clearHomeCover().then(() => qc.invalidateQueries({ queryKey: ["home-cover"] }))
+            }
+          >
+            Remove cover
+          </GlassButton>
+        </div>
+      )}
     </section>
   );
 }

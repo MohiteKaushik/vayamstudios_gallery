@@ -244,6 +244,17 @@ export const api = {
       body: JSON.stringify({ items }),
     }),
 
+  homeCover: () =>
+    call<{ coverUrl: string | null; collectionId: string | null; photoId: string | null }>("/api/site/cover"),
+
+  setHomeCover: (collectionId: string, photoId: string) =>
+    call<{ coverUrl: string | null }>("/api/site/cover", {
+      method: "PUT",
+      body: JSON.stringify({ collectionId, photoId }),
+    }),
+
+  clearHomeCover: () => call<{ coverUrl: null }>("/api/site/cover", { method: "DELETE" }),
+
   renameCollection: (collectionId: string, name: string) =>
     call<Collection>(`/api/collections/${collectionId}`, { method: "PATCH", body: JSON.stringify({ name }) }),
 

@@ -37,12 +37,11 @@ export function EventShowcase() {
       <ul className="space-y-2">
         {/* Newest first. The studio's own list runs oldest to newest, and that
             order is kept in vayam.ts because it is theirs; it is only reversed
-            for display, so the most recent work is what a visitor reads first.
-            The number stays with the event rather than with the row, so an
-            event does not change its number when another is added. */}
+            for display, so the most recent work is what a visitor reads first,
+            and numbered from the top. */}
         {[...events].reverse().map((event, i) => {
           const place = eventSubtitle(event);
-          const number = events.length - i;
+          const number = i + 1;
           return (
             <li key={`${event.name}-${event.year ?? ""}-${place ?? ""}`}>
               <GlassCard
