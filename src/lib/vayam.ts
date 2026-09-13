@@ -38,9 +38,8 @@ export const contact = {
  */
 export const office = {
   address: "SVL Pride, 501, Nagole, Hyderabad, Telangana 500039",
-  mapsHref:
-    "https://www.google.com/maps/search/?api=1&query=" +
-    encodeURIComponent("SVL Pride, Nagole, Hyderabad, Telangana 500039"),
+  // The office's exact pin. A search for the address landed on the wrong building.
+  mapsHref: "https://www.google.com/maps?q=17.383149,78.553669",
   hours: "Sunday to Saturday, 9:00 AM to 9:00 PM",
   email: "info@vayamdesigners.com",
   emailHref: "mailto:info@vayamdesigners.com",
