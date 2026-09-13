@@ -130,16 +130,16 @@ export function PhotoViewer({
           <p className="mb-2 font-medium">Match details</p>
           <dl className="grid grid-cols-2 gap-y-1 text-muted-foreground sm:grid-cols-4">
             <dt>File</dt>
-            <dd className="truncate text-foreground">{photo.fileName ?? "—"}</dd>
+            <dd className="truncate text-foreground">{photo.fileName ?? "Not recorded"}</dd>
             <dt>Faces detected</dt>
             <dd className="text-foreground">{photo.facesCount ?? 0}</dd>
             <dt>Match confidence</dt>
             <dd className="text-foreground">
-              {photo.confidence != null ? `${Math.round(photo.confidence * 100)}%` : "—"}
+              {photo.confidence != null ? `${Math.round(photo.confidence * 100)}%` : "Not from a search"}
             </dd>
             <dt>How it was found</dt>
             <dd className="text-foreground">
-              {photo.hops == null ? "—" : photo.hops === 0 ? "Matched your reference photo" : "Reached through a turned-away view"}
+              {photo.hops == null ? "Not from a search" : photo.hops === 0 ? "Matched your reference photo" : "Reached through a turned-away view"}
             </dd>
           </dl>
         </div>

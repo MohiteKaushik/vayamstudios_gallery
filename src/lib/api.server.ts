@@ -34,6 +34,14 @@ import {
   DESCRIPTOR_DIM,
   type MediaEnv,
   type PhotoMeta,
+  BinError,
+  binPhotos,
+  deleteForever,
+  isBinId,
+  listBin,
+  purgeExpired,
+  readBinGroup,
+  restoreFromBin,
 } from "./media.server.ts";
 import {
   getMemberById,
@@ -320,7 +328,16 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
     }
     const cid = rest[0] ?? "";
     if (!isSafeId(cid)) return json({ error: "Unknown collection" }, 400);
+    if (rest.length === 1 && request.method === "PATCH") {
+      if (!isAdmin) return json({ error: "Admins only" }, 403);
+      return renameCollection(request, env, cid);
+    }
     if (rest[1] === "photos" && request.method === "GET") {
+      // An event in the recycle bin has no record, and nobody should be able to
+      // page through its photographs by id while it is there.
+      if (!(await env.PHOTOS.head(collectionKey(cid)))) {
+        return json({ error: "This event is not available" }, 404);
+      }
       return listPhotos(env, cid, url.searchParams.get("cursor"));
     }
     if (rest[1] === "status" && request.method === "GET") {
@@ -351,6 +368,11 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
     return listWaiting(env);
   }
 
+  if (head === "bin") {
+    if (!isAdmin) return json({ error: "Admins only" }, 403);
+    return handleBin(request, env, rest);
+  }
+
   if (head === "face-profile") {
     if (request.method === "POST") return saveFaceProfile(request, env, userId);
     if (request.method === "DELETE") return forgetFace(env, member);
@@ -362,7 +384,16 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
     if (request.method === "GET" && isSafeId(cid)) {
       const cached = await readJson<ScanRecord>(env.PHOTOS, scanKey(userId, cid));
       const current = cached?.matcher === MATCHER_VERSION ? cached : null;
-      return json(current ?? { hits: [], possible: [], scannedAt: 0, facesSearched: 0 });
+      const empty = { hits: [], possible: [], scannedAt: 0, facesSearched: 0 };
+      if (!current || !(await env.PHOTOS.head(collectionKey(cid)))) return json(empty);
+
+      // A saved result can name photos an operator has since moved to the
+      // recycle bin. Their images still exist until the bin is emptied, so they
+      // would still show, which is exactly what deleting them was meant to stop.
+      const live = await mapLimit(current.hits, READ_CONCURRENCY, async (hit) =>
+        (await env.PHOTOS.head(photoMetaKey(cid, hit.photoId))) ? hit : null,
+      );
+      return json({ ...current, hits: live.filter((h): h is ScanHit => h !== null) });
     }
   }
 
@@ -460,6 +491,28 @@ async function unindexedPhotos(
   return { photoIds: pending, total: photos.size, indexed: faces.size };
 }
 
+/**
+ * Renames an event. Only the name changes; every photograph, face and search
+ * result stays attached to the event's id, which never changes.
+ */
+async function renameCollection(request: Request, env: MediaEnv, cid: string): Promise<Response> {
+  let body: { name?: unknown };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Malformed body" }, 400);
+  }
+  const name = typeof body.name === "string" ? body.name.trim().replace(/\s+/g, " ") : "";
+  if (name.length < 2) return json({ error: "Give the event a name of at least 2 characters" }, 400);
+  if (name.length > 120) return json({ error: "Keep the name under 120 characters" }, 400);
+
+  const record = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(cid));
+  if (!record) return json({ error: "Unknown event" }, 404);
+  const updated: CollectionRecord = { ...record, name };
+  await writeJson(env.PHOTOS, collectionKey(cid), updated);
+  return json(updated);
+}
+
 async function countPhotos(bucket: R2Bucket, cid: string): Promise<number> {
   let total = 0;
   let cursor: string | undefined;
@@ -524,6 +577,7 @@ async function listPhotos(
       width: p.width,
       height: p.height,
       facesCount: p.facesCount,
+      createdAt: p.createdAt,
       thumbUrl: mediaUrl(cid, p.id, "t"),
       fullUrl: mediaUrl(cid, p.id),
     }));
@@ -1150,6 +1204,57 @@ async function listWaiting(env: MediaEnv): Promise<Response> {
   return json({ waiting });
 }
 
+/* -------------------------------------------------------------------------- */
+/*                                 Recycle bin                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The console's view of the recycle bin. The bin itself lives beside the photo
+ * storage in media.server.ts; this only routes to it.
+ *
+ *   GET  /api/bin                  every entry, newest first
+ *   GET  /api/bin/{entry}          one entry with all of its photos
+ *   POST /api/bin/{entry}/restore  { photos?: [...] } back to the event
+ *   POST /api/bin/{entry}/delete   { photos?: [...] } gone for good
+ */
+async function handleBin(request: Request, env: MediaEnv, rest: string[]): Promise<Response> {
+  const [id, action] = rest;
+  try {
+    if (request.method === "GET" && !id) {
+      // Opening the bin also clears anything past its thirty days, so nothing
+      // outstays its welcome even if a scheduled run never fired.
+      await purgeExpired(env).catch((e) => console.error("[bin] clearing on open failed", e));
+      return json({ groups: await listBin(env) });
+    }
+    if (!id || !isBinId(id)) return json({ error: "Unknown recycle bin entry" }, 400);
+
+    if (request.method === "GET" && !action) {
+      const group = await readBinGroup(env, id);
+      if (!group) return json({ error: "That item is no longer in the recycle bin" }, 404);
+      return json({ group, photos: await binPhotos(env, group) });
+    }
+
+    if (request.method === "POST" && (action === "restore" || action === "delete")) {
+      let body: { photos?: unknown } = {};
+      try {
+        body = (await request.json()) as typeof body;
+      } catch {
+        // No body means the whole entry.
+      }
+      const only = Array.isArray(body.photos)
+        ? body.photos.filter((p): p is string => typeof p === "string" && isSafeId(p))
+        : undefined;
+      return json(
+        action === "restore" ? await restoreFromBin(env, id, only) : await deleteForever(env, id, only),
+      );
+    }
+    return json({ error: "Not found" }, 404);
+  } catch (e) {
+    if (e instanceof BinError) return json({ error: e.message }, e.status);
+    throw e;
+  }
+}
+
 /* ---------------------------------- scan ---------------------------------- */
 
 /**
@@ -1174,6 +1279,9 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
   }
   const cid = body.collectionId ?? "";
   if (!isSafeId(cid)) return json({ error: "Unknown collection" }, 400);
+  if (!(await env.PHOTOS.head(collectionKey(cid)))) {
+    return json({ error: "This event is not available any more", code: "no-event" }, 404);
+  }
 
   const member = await getMemberById(env.PHOTOS, userId);
   if (!member) return json({ error: "No such member" }, 401);

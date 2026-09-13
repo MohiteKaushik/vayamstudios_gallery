@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { House, Images, Layers, Settings2 } from "lucide-react";
 import type { ReactNode } from "react";
+import { ContactButton } from "@/components/ContactSheet";
 import { Logo } from "@/components/Logo";
 import { cn } from "@/lib/utils";
 
@@ -29,17 +30,20 @@ export function AppShell({ children, wide }: { children: ReactNode; wide?: boole
           </button>
 
 
-          <nav className="hidden items-center gap-1 sm:flex" aria-label="Primary">
-            {nav.map((item) => (
-              <Link
-                key={item.to}
-                to={item.to}
-                className="press rounded-full px-4 py-2 text-[0.85rem] text-muted-foreground hover:bg-secondary hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-foreground"
-              >
-                {item.label}
-              </Link>
-            ))}
-          </nav>
+          <div className="flex items-center gap-2">
+            <nav className="hidden items-center gap-1 sm:flex" aria-label="Primary">
+              {nav.map((item) => (
+                <Link
+                  key={item.to}
+                  to={item.to}
+                  className="press rounded-full px-4 py-2 text-[0.85rem] text-muted-foreground hover:bg-secondary hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-foreground"
+                >
+                  {item.label}
+                </Link>
+              ))}
+            </nav>
+            <ContactButton />
+          </div>
         </div>
       </header>
 

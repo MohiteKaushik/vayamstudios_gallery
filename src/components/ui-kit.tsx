@@ -49,7 +49,7 @@ export const GlassButton = forwardRef<HTMLButtonElement, GlassButtonProps>(funct
       ref={ref}
       disabled={disabled || loading}
       className={cn(
-        "press inline-flex select-none items-center justify-center gap-2 rounded-full font-medium tracking-[-0.01em]",
+        "press inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-full font-medium tracking-[-0.01em]",
         "disabled:pointer-events-none",
         variants[variant],
         sizes[size],

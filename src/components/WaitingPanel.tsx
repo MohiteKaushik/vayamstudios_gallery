@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { EmptyState, GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
 import { api, type WaitingRow } from "@/lib/api";
 import { formatPhone } from "@/lib/members";
+import { sinceText } from "@/lib/time";
 
 /**
  * Who is still waiting to be photographed.
@@ -152,18 +153,6 @@ function FaceThumb({ userId, name }: { userId: string; name: string }) {
       )}
     </div>
   );
-}
-
-/** "4 minutes ago", which is the only part of a timestamp anyone acts on here. */
-function sinceText(at: number): string {
-  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
-  if (seconds < 60) return "just now";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
-  const days = Math.round(hours / 24);
-  return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
 /**

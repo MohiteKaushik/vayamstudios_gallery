@@ -13,9 +13,9 @@ import { formatCount } from "@/lib/images";
 export const Route = createFileRoute("/photos")({
   head: () => ({
     meta: [
-      { title: "Photos — VAYAM Designers Gallery" },
+      { title: "Photos | VAYAM Designers Gallery" },
       { name: "description", content: "Every photo you appear in, in one place." },
-      { property: "og:title", content: "Photos — VAYAM Designers Gallery" },
+      { property: "og:title", content: "Photos | VAYAM Designers Gallery" },
       { property: "og:description", content: "Every photo you appear in, in one place." },
     ],
   }),

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ImagePlus, Layers, Plus, Radio, RefreshCw, ScanFace, Trash2, X } from "lucide-react";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { Check, CheckCheck, ChevronLeft, ImagePlus, Layers, Pencil, Plus, Radio, RefreshCw, ScanFace, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
@@ -14,6 +14,7 @@ import { formatCount } from "@/lib/images";
 import { api, ApiError, confidencePercent, type Photo, type ScanHit, type ScanResult } from "@/lib/api";
 import { uploadPhotos, uploadSavings, type BulkProgress } from "@/lib/upload";
 import { keepIndexing, reanalyseCollection } from "@/lib/reanalyse";
+import { dayLabel, timeLabel } from "@/lib/time";
 import { useIsAdmin } from "@/lib/roles";
 
 export const Route = createFileRoute("/collections")({
@@ -22,9 +23,9 @@ export const Route = createFileRoute("/collections")({
   }),
   head: () => ({
     meta: [
-      { title: "Live Event — VAYAM Designers Gallery" },
+      { title: "Live Event | VAYAM Designers Gallery" },
       { name: "description", content: "Find yourself in the photographs from the event." },
-      { property: "og:title", content: "Live Event — VAYAM Designers Gallery" },
+      { property: "og:title", content: "Live Event | VAYAM Designers Gallery" },
       { property: "og:description", content: "Find yourself in the photographs from the event." },
     ],
   }),
@@ -66,8 +67,13 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
   const remove = useMutation({
     mutationFn: (cid: string) => api.deletePhotos(cid),
     onSuccess: (r) => {
-      toast.success(`Collection deleted, ${formatCount(r.deleted, "photo")} removed`);
       qc.invalidateQueries({ queryKey: ["collections"] });
+      qc.invalidateQueries({ queryKey: ["bin"] });
+      const groupId = r.groupId;
+      toast.success("Event moved to the recycle bin", {
+        description: "Restore it from the recycle bin in the admin console for 30 days.",
+        ...(groupId ? { action: { label: "Undo", onClick: () => void undoFromBin(qc, groupId) } } : {}),
+      });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Could not delete the collection"),
   });
@@ -100,7 +106,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
         {isAdmin
           ? "Create an event, then add the photos to it. Every face is indexed once so members can find themselves."
-          : "Open an event and tap Find me — only the photos that match your reference face appear."}
+          : "Open an event and tap Find me. Only the photos that match your reference face appear."}
       </p>
 
       {isAdmin && (
@@ -114,7 +120,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Collection name — e.g. Brand Summit 2026"
+            placeholder="Event name, for example Brand Summit 2026"
             className={input}
             aria-label="Collection name"
           />
@@ -186,7 +192,8 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
                         e.stopPropagation();
                         const ok = await ask({
                           title: `Delete "${c.name}"?`,
-                          body: `${formatCount(c.photoCount, "photo")} will be removed. This cannot be undone.`,
+                          body: `The event and its ${formatCount(c.photoCount, "photo")} move to the recycle bin. You can restore them from the admin console for 30 days.`,
+                          confirmLabel: "Move to bin",
                         });
                         if (ok) remove.mutate(c.id);
                       }}
@@ -239,12 +246,30 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
   });
 
   const removeSelected = useMutation({
-    mutationFn: (ids: string[]) => api.deletePhotos(collectionId, ids),
+    // A selection goes to the recycle bin in slices, because moving a photo is
+    // several storage calls and a request has a ceiling on those. Every slice
+    // after the first joins the entry the first one made, so the whole
+    // selection comes back with a single Restore.
+    mutationFn: async (ids: string[]) => {
+      let deleted = 0;
+      let groupId: string | null = null;
+      for (let i = 0; i < ids.length; i += MAX_TRASH_PER_REQUEST) {
+        const r = await api.deletePhotos(collectionId, ids.slice(i, i + MAX_TRASH_PER_REQUEST), groupId ?? undefined);
+        deleted += r.deleted;
+        groupId = r.groupId ?? groupId;
+      }
+      return { deleted, groupId };
+    },
     onSuccess: (r) => {
-      toast.success(`Deleted ${formatCount(r.deleted, "photo")}`);
       setSelected(new Set());
       qc.invalidateQueries({ queryKey: ["photos", collectionId] });
       qc.invalidateQueries({ queryKey: ["collections"] });
+      qc.invalidateQueries({ queryKey: ["bin"] });
+      const groupId = r.groupId;
+      toast.success(`Moved ${formatCount(r.deleted, "photo")} to the recycle bin`, {
+        description: "Restore them from the admin console for 30 days.",
+        ...(groupId ? { action: { label: "Undo", onClick: () => void undoFromBin(qc, groupId) } } : {}),
+      });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Could not delete those photos"),
   });
@@ -365,13 +390,40 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
 
   const list = photos.data ?? [];
   const grid: GridPhoto[] = list.map(toGridPhoto);
+  const batches = groupIntoBatches(list);
+
+  const toggleOne = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  /** Selects a whole upload at once, or clears it when it is already selected. */
+  const toggleBatch = (ids: string[]) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const everySelected = ids.every((id) => next.has(id));
+      for (const id of ids) {
+        if (everySelected) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
 
   return (
     <>
       <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-semibold tracking-[-0.03em]">{name}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{formatCount(list.length, "photo")}</p>
+          <EventTitle collectionId={collectionId} name={name} />
+          <p className="mt-1 text-sm text-muted-foreground">
+            {photos.isLoading
+              ? "Loading photos"
+              : photos.isError
+                ? "Photos could not be loaded"
+                : formatCount(list.length, "photo")}
+          </p>
         </div>
         <input
           ref={inputRef}
@@ -384,7 +436,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
             e.target.value = "";
           }}
         />
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Indexing whatever the uploader script pushes up, as it arrives. */}
           <GlassButton
             variant={watcher ? "danger" : "quiet"}
@@ -435,7 +487,8 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
               onClick={async () => {
                 const ok = await ask({
                   title: `Delete ${formatCount(selected.size, "photo")}?`,
-                  body: "This cannot be undone.",
+                  body: "They move to the recycle bin. You can restore them from the admin console for 30 days.",
+                  confirmLabel: "Move to bin",
                 });
                 if (ok) removeSelected.mutate([...selected]);
               }}
@@ -470,6 +523,19 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
 
       {photos.isLoading ? (
         <PhotoGridSkeleton />
+      ) : photos.isError ? (
+        // A failed load used to fall through to "No photos yet", which reads as
+        // an event that has lost everything. Say what actually happened.
+        <EmptyState
+          icon={<RefreshCw className="size-7" strokeWidth={1.5} />}
+          title="Photos could not be loaded"
+          description="Nothing has been deleted. The connection to storage dropped; try again in a moment."
+          action={
+            <GlassButton variant="quiet" icon={<RefreshCw className="size-4" />} onClick={() => void photos.refetch()}>
+              Try again
+            </GlassButton>
+          }
+        />
       ) : list.length === 0 && !progress ? (
         <EmptyState
           icon={<ImagePlus className="size-7" strokeWidth={1.5} />}
@@ -477,18 +543,41 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
           description="Add photos and every face in them will be indexed for member scans."
         />
       ) : (
-        <PhotoGrid
-          photos={grid}
-          onOpen={setOpen}
-          selected={selected}
-          onToggleSelect={(id) =>
-            setSelected((prev) => {
-              const next = new Set(prev);
-              next.has(id) ? next.delete(id) : next.add(id);
-              return next;
-            })
-          }
-        />
+        // Newest first, in the batches they were uploaded in, so a whole upload
+        // that turns out to be a duplicate can be selected and removed at once
+        // instead of being picked out one photograph at a time.
+        <div className="space-y-10">
+          {batches.map((batch) => {
+            const ids = batch.photos.map((p) => p.id);
+            const everySelected = ids.every((id) => selected.has(id));
+            return (
+              <section key={batch.key} aria-label={batchTitle(batch)}>
+                <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+                  <div>
+                    <h2 className="font-medium tracking-[-0.01em]">{batchTitle(batch)}</h2>
+                    <p className="text-xs text-muted-foreground">
+                      {formatCount(batch.photos.length, "photo")} uploaded
+                    </p>
+                  </div>
+                  <GlassButton
+                    variant={everySelected ? "quiet" : "ghost"}
+                    size="sm"
+                    icon={<CheckCheck className="size-4" />}
+                    onClick={() => toggleBatch(ids)}
+                  >
+                    {everySelected ? "Deselect batch" : "Select batch"}
+                  </GlassButton>
+                </div>
+                <PhotoGrid
+                  photos={batch.photos.map(toGridPhoto)}
+                  onOpen={(i) => setOpen(batch.offset + i)}
+                  selected={selected}
+                  onToggleSelect={toggleOne}
+                />
+              </section>
+            );
+          })}
+        </div>
       )}
       {open !== null && (
         <PhotoViewer photos={grid} index={open} onIndexChange={setOpen} onClose={() => setOpen(null)} />
@@ -569,7 +658,9 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
               ? hasScanned
                 ? `${formatCount(hits.length, "photo")} of you`
                 : "Not scanned yet"
-              : `${formatCount(everything.length, "photo")} from this event`}
+              : allPhotos.isLoading
+                ? "Loading photos"
+                : `${formatCount(everything.length, "photo")} from this event`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -699,6 +790,130 @@ function explainEmpty(r: ScanResult): string {
 }
 
 /* --------------------------------- shared --------------------------------- */
+
+/**
+ * Photos uploaded within this long of each other belong to the same batch.
+ *
+ * An upload, whether a card emptied through the watcher or a selection added on
+ * this screen, arrives as a run of photographs seconds apart, and the next one
+ * starts after a pause. Five quiet minutes is long enough that one card never
+ * splits in two, and short enough that 10:00 and 10:20 stay separate.
+ */
+const BATCH_GAP_MS = 5 * 60 * 1000;
+
+/** Photos moved to the recycle bin per request. The server accepts no more. */
+const MAX_TRASH_PER_REQUEST = 100;
+
+type Batch = { key: string; photos: Photo[]; newest: number; oldest: number; offset: number };
+
+/**
+ * Splits a newest-first list wherever the uploads paused, keeping the order.
+ * `offset` is where each batch starts in the full list, which is what the photo
+ * viewer counts in.
+ */
+function groupIntoBatches(photos: Photo[]): Batch[] {
+  const batches: Batch[] = [];
+  photos.forEach((photo, index) => {
+    const at = photo.createdAt ?? 0;
+    const current = batches[batches.length - 1];
+    if (current && current.oldest - at <= BATCH_GAP_MS) {
+      current.photos.push(photo);
+      current.oldest = at;
+    } else {
+      batches.push({ key: `${at}-${photo.id}`, photos: [photo], newest: at, oldest: at, offset: index });
+    }
+  });
+  return batches;
+}
+
+/** "Today · 10:00 PM to 10:07 PM", or one time when the batch is a single minute. */
+function batchTitle(batch: Batch): string {
+  if (!batch.newest) return "Earlier uploads";
+  const from = timeLabel(batch.oldest);
+  const to = timeLabel(batch.newest);
+  return `${dayLabel(batch.oldest)} · ${from === to ? from : `${from} to ${to}`}`;
+}
+
+/**
+ * The event's name, with a pencil to rename it. Operators only: this sits in
+ * the admin view of an event, and the server refuses anyone else.
+ */
+function EventTitle({ collectionId, name }: { collectionId: string; name: string }) {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+
+  const rename = useMutation({
+    mutationFn: (next: string) => api.renameCollection(collectionId, next),
+    onSuccess: (r) => {
+      toast.success(`Renamed to "${r.name}"`);
+      setEditing(false);
+      qc.invalidateQueries({ queryKey: ["collections"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not rename the event"),
+  });
+
+  if (!editing) {
+    return (
+      <div className="flex items-center gap-2">
+        <h1 className="text-3xl font-semibold tracking-[-0.03em]">{name}</h1>
+        <button
+          type="button"
+          aria-label="Rename event"
+          onClick={() => {
+            setDraft(name);
+            setEditing(true);
+          }}
+          className="press flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Pencil className="size-4" />
+        </button>
+      </div>
+    );
+  }
+
+  const trimmed = draft.trim();
+  return (
+    <form
+      className="flex flex-wrap items-center gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (trimmed.length >= 2 && trimmed !== name) rename.mutate(trimmed);
+        else setEditing(false);
+      }}
+    >
+      <input
+        autoFocus
+        aria-label="Event name"
+        value={draft}
+        maxLength={120}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setEditing(false);
+        }}
+        className="h-12 w-full max-w-md rounded-2xl border border-hairline bg-background/60 px-4 text-xl font-semibold outline-none focus:ring-2 focus:ring-ring"
+      />
+      <GlassButton type="submit" size="sm" icon={<Check className="size-4" />} loading={rename.isPending} disabled={trimmed.length < 2}>
+        Save
+      </GlassButton>
+      <GlassButton type="button" variant="ghost" size="sm" onClick={() => setEditing(false)}>
+        Cancel
+      </GlassButton>
+    </form>
+  );
+}
+
+/** The Undo on a delete toast: puts the whole entry straight back. */
+async function undoFromBin(qc: QueryClient, groupId: string) {
+  try {
+    const r = await api.restoreFromBin(groupId);
+    toast.success(`Restored ${formatCount(r.restored, "photo")}`);
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : "Could not restore");
+  } finally {
+    for (const queryKey of [["collections"], ["bin"], ["photos"]]) qc.invalidateQueries({ queryKey });
+  }
+}
 
 const toGridPhoto = (p: Photo): GridPhoto => ({
   id: p.id,

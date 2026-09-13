@@ -1,17 +1,25 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Aperture } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { useSession } from "@/lib/session";
 import { FieldError, GlassButton, GlassCard } from "@/components/ui-kit";
 import { normalisePhone, validateSignUp, type FieldErrors } from "@/lib/members";
+import { ContactButton } from "@/components/ContactSheet";
+import { Logo } from "@/components/Logo";
+import { isKnownDevice, rememberDevice } from "@/lib/device";
 
 export const Route = createFileRoute("/auth")({
+  // "up" opens on creating an account and "in" on signing in. Left out, the page
+  // decides from whether this device has signed in before.
+  validateSearch: (s: Record<string, unknown>) => ({
+    mode: s["mode"] === "up" ? ("up" as const) : s["mode"] === "in" ? ("in" as const) : undefined,
+  }),
   head: () => ({
     meta: [
-      { title: "Sign in — VAYAM Designers Gallery" },
+      { title: "Sign in | VAYAM Designers Gallery" },
       { name: "description", content: "Sign in to VAYAM Designers Gallery to find every photo you appear in." },
-      { property: "og:title", content: "Sign in — VAYAM Designers Gallery" },
+      { property: "og:title", content: "Sign in | VAYAM Designers Gallery" },
       { property: "og:description", content: "Sign in to VAYAM Designers Gallery to find every photo you appear in." },
     ],
   }),
@@ -33,7 +41,7 @@ export const Route = createFileRoute("/auth")({
 async function post(
   action: "signin" | "signup",
   body: Record<string, string>,
-): Promise<{ error: string | null; fields?: FieldErrors }> {
+): Promise<{ error: string | null; fields?: FieldErrors; status?: number }> {
   try {
     const res = await fetch(`/api/auth/${action}`, {
       method: "POST",
@@ -51,6 +59,7 @@ async function post(
     const suffix = payload.reference ? ` (ref ${payload.reference})` : "";
     return {
       error: (payload.error ?? "That did not work") + suffix,
+      status: res.status,
       ...(payload.errors ? { fields: payload.errors } : {}),
     };
   } catch {
@@ -61,7 +70,26 @@ async function post(
 function AuthPage() {
   const { user, loading, refresh } = useSession();
   const navigate = useNavigate();
-  const [mode, setMode] = useState<"in" | "up">("in");
+  const { mode: asked } = Route.useSearch();
+
+  // Somebody arriving from "Get started" has almost never made an account, and
+  // opening on a sign-in form is how people ended up typing a password for an
+  // account that did not exist and being told it was wrong. So a new device
+  // opens on creating an account and a device that has signed in before opens
+  // on signing in. Whatever the link asked for wins over both.
+  const [mode, setModeState] = useState<"in" | "up">(asked ?? "up");
+  const [noMatch, setNoMatch] = useState(false);
+
+  useEffect(() => {
+    if (asked) setModeState(asked);
+    else if (isKnownDevice()) setModeState("in");
+  }, [asked]);
+
+  const setMode = (next: "in" | "up") => {
+    setModeState(next);
+    setNoMatch(false);
+    navigate({ to: "/auth", search: { mode: next }, replace: true });
+  };
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
@@ -71,6 +99,7 @@ function AuthPage() {
 
   useEffect(() => {
     if (!loading && user) {
+      rememberDevice();
       navigate({ to: user.role === "admin" ? "/home" : "/home", replace: true });
     }
   }, [user, loading, navigate]);
@@ -98,9 +127,14 @@ function AuthPage() {
 
     if (result.error) {
       if (result.fields) setErrors(result.fields);
-      toast.error(result.error);
+      // A refused sign-in is far more often "never signed up here" than "typed
+      // the password wrong", so it says so and offers the way through, rather
+      // than a toast that repeats only the first half.
+      if (mode === "in" && result.status === 401) setNoMatch(true);
+      else toast.error(result.error);
       return;
     }
+    rememberDevice();
     if (mode === "up") toast.success("Account created");
     await refresh();
   }
@@ -113,8 +147,14 @@ function AuthPage() {
     "h-12 w-full rounded-2xl border border-hairline bg-background/60 px-4 text-[0.95rem] outline-none transition focus:ring-2 focus:ring-ring";
 
   return (
-    <div className="relative flex min-h-dvh items-center justify-center px-5">
+    <div className="relative flex min-h-dvh items-center justify-center px-5 py-24">
       <div className="ambient-field" aria-hidden />
+      <header className="absolute inset-x-0 top-0 mx-auto flex h-20 max-w-6xl items-center justify-between px-5">
+        <Link to="/" className="press flex h-10 items-center" aria-label="VAYAM Designers Gallery">
+          <Logo className="h-8 sm:h-10" />
+        </Link>
+        <ContactButton />
+      </header>
       <GlassCard className="rise-in w-full max-w-sm p-8">
         <div className="mb-8 flex flex-col items-center text-center">
           <Aperture className="mb-4 size-8" strokeWidth={1.4} />
@@ -173,6 +213,7 @@ function AuthPage() {
               onChange={(e) => {
                 setEmail(e.target.value);
                 clearError("email");
+                setNoMatch(false);
               }}
             />
             <FieldError message={errors.email} />
@@ -189,6 +230,7 @@ function AuthPage() {
               onChange={(e) => {
                 setPassword(e.target.value);
                 clearError("password");
+                setNoMatch(false);
               }}
             />
             <FieldError message={errors.password} />
@@ -197,16 +239,39 @@ function AuthPage() {
             {mode === "in" ? "Sign in" : "Create account"}
           </GlassButton>
         </form>
-        <button
-          type="button"
-          onClick={() => {
-            setMode(mode === "in" ? "up" : "in");
-            setErrors({});
-          }}
-          className="mt-6 w-full rounded-full text-center text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          {mode === "in" ? "New here? Create an account" : "Already have an account? Sign in"}
-        </button>
+
+        {noMatch && mode === "in" && (
+          <div
+            role="alert"
+            className="mt-5 rounded-2xl border border-hairline bg-secondary/60 px-4 py-3 text-sm leading-relaxed"
+          >
+            <p className="font-medium">That email and password do not match an account.</p>
+            <p className="mt-1 text-muted-foreground">
+              If this is your first time here, create an account first. It takes a minute.
+            </p>
+            <button
+              type="button"
+              onClick={() => setMode("up")}
+              className="mt-3 rounded-full font-semibold text-foreground underline decoration-2 underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Create an account
+            </button>
+          </div>
+        )}
+
+        <p className="mt-6 text-center text-sm text-muted-foreground">
+          {mode === "in" ? "New here? " : "Already have an account? "}
+          <button
+            type="button"
+            onClick={() => {
+              setMode(mode === "in" ? "up" : "in");
+              setErrors({});
+            }}
+            className="rounded-full font-semibold text-foreground underline decoration-2 underline-offset-4 transition hover:decoration-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {mode === "in" ? "Create an account" : "Sign in"}
+          </button>
+        </p>
       </GlassCard>
     </div>
   );

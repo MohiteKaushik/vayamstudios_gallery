@@ -1,13 +1,16 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowUpRight, Cpu, Lock, PenTool, Rocket, Sparkles } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ContactButton } from "@/components/ContactSheet";
 import { Logo } from "@/components/Logo";
+import { isKnownDevice, rememberDevice } from "@/lib/device";
 import { GlassButton, GlassCard } from "@/components/ui-kit";
 import { useSession } from "@/lib/session";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "VAYAM Designers Gallery — Find every photo you're in" },
+      { title: "VAYAM Designers Gallery | Find every photo you're in" },
       {
         name: "description",
         content:
@@ -15,7 +18,7 @@ export const Route = createFileRoute("/")({
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
-      { property: "og:title", content: "VAYAM Designers Gallery — Find every photo you're in" },
+      { property: "og:title", content: "VAYAM Designers Gallery | Find every photo you're in" },
       {
         property: "og:description",
         content:
@@ -28,8 +31,8 @@ export const Route = createFileRoute("/")({
 
 const points = [
   { icon: Lock, title: "Private by design", body: "Your photos are analysed on your device and never sent to a third party." },
-  { icon: Cpu, title: "Instant results", body: "Hundreds of photos are matched in minutes, right in your browser." },
-  { icon: Sparkles, title: "Precision matching", body: "A 128-point face signature separates you from everyone else in the frame." },
+  { icon: Cpu, title: "Instant results", body: "Your photos from the whole event come back in seconds, not minutes." },
+  { icon: Sparkles, title: "Precision matching", body: "A 512-point face signature tells you apart from everyone else in the frame, even at an angle." },
 ];
 
 const services = [
@@ -40,23 +43,44 @@ const services = [
 
 function Landing() {
   const { user } = useSession();
+  // Decided once the page has loaded, because only the browser knows whether
+  // this device has signed in before. Guessing on the server would render one
+  // destination and then swap it for another.
+  const [known, setKnown] = useState(false);
+  useEffect(() => {
+    if (user) rememberDevice();
+    setKnown(isKnownDevice());
+  }, [user]);
+  const startMode = known ? ("in" as const) : ("up" as const);
+
   return (
     <div className="relative min-h-dvh">
       <div className="ambient-field" aria-hidden />
       <header className="mx-auto flex h-20 max-w-6xl items-center justify-between px-5">
         <Link to="/" className="press flex h-8 items-center" aria-label="VAYAM Designers Gallery">
-          <Logo className="h-10" />
+          <Logo className="h-8 sm:h-10" />
         </Link>
-        <Link to={user ? "/home" : "/auth"}>
-          <GlassButton variant="glass" size="sm">
-            {user ? "Open app" : "Sign in"}
-          </GlassButton>
-        </Link>
+        <div className="flex shrink-0 items-center gap-2">
+          <ContactButton />
+          {user ? (
+            <Link to="/home">
+              <GlassButton variant="glass" size="sm">
+                Open app
+              </GlassButton>
+            </Link>
+          ) : (
+            <Link to="/auth" search={{ mode: "in" }}>
+              <GlassButton variant="glass" size="sm">
+                Sign in
+              </GlassButton>
+            </Link>
+          )}
+        </div>
       </header>
 
       <section className="mx-auto max-w-3xl px-5 pt-20 text-center sm:pt-32">
         <p className="rise-in mb-6 inline-flex items-center gap-2 rounded-full bg-secondary px-4 py-1.5 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-          VAYAM Designers Gallery
+          An initiative by VAYAM Designers
         </p>
         <h1 className="rise-in text-balance text-5xl font-semibold leading-[1.02] tracking-[-0.045em] sm:text-7xl">
           Your photos,
@@ -64,12 +88,21 @@ function Landing() {
           found for you.
         </h1>
         <p className="rise-in mx-auto mt-7 max-w-xl text-lg leading-relaxed text-muted-foreground [animation-delay:80ms]">
-          Add one reference photo and we quietly pick out every frame you appear in — and nothing else.
+          Add one reference photo and we quietly pick out every frame you appear in.
         </p>
         <div className="rise-in mt-10 flex justify-center [animation-delay:160ms]">
-          <Link to={user ? "/home" : "/auth"}>
-            <GlassButton size="lg">Get started</GlassButton>
-          </Link>
+          {user ? (
+            <Link to="/home">
+              <GlassButton size="lg">Get started</GlassButton>
+            </Link>
+          ) : (
+            // A first visit opens on creating an account. Opening on sign-in
+            // is how new guests ended up told their password was wrong for an
+            // account they had never made.
+            <Link to="/auth" search={{ mode: startMode }}>
+              <GlassButton size="lg">Get started</GlassButton>
+            </Link>
+          )}
         </div>
       </section>
 
@@ -92,7 +125,7 @@ function Landing() {
                 India's finest design, branding and development company.
               </h2>
               <p className="mt-4 text-base leading-relaxed text-muted-foreground">
-                This gallery is built by VAYAM Designers — a studio trusted for brand identities, campaigns
+                This gallery is built by VAYAM Designers, a studio trusted for brand identities, campaigns
                 and digital products that look considered and perform even better. If you like how this feels,
                 imagine what we could build for you.
               </p>

@@ -21,9 +21,9 @@ export const Route = createFileRoute("/admin")({
   }),
   head: () => ({
     meta: [
-      { title: "Admin — VAYAM Designers Gallery" },
+      { title: "Admin | VAYAM Designers Gallery" },
       { name: "description", content: "Publish photo collections that members can scan for themselves." },
-      { property: "og:title", content: "Admin — VAYAM Designers Gallery" },
+      { property: "og:title", content: "Admin | VAYAM Designers Gallery" },
       { property: "og:description", content: "Publish photo collections that members can scan for themselves." },
     ],
   }),

@@ -21,7 +21,8 @@
     "test:store": "node --experimental-strip-types scripts/test-members-store.ts",
     "test:media": "node --experimental-strip-types scripts/test-media.ts",
     "test:insightface": "node --experimental-strip-types scripts/test-insightface.ts",
-    "measure": "node --experimental-strip-types scripts/measure.mjs"
+    "measure": "node --experimental-strip-types scripts/measure.mjs",
+    "test:bin": "node --experimental-strip-types scripts/test-bin.ts"
   },
   "overrides": {
     "rolldown": "1.2.1"

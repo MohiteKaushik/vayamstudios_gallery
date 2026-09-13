@@ -27,6 +27,8 @@ export type Photo = {
   facesCount: number;
   thumbUrl: string;
   fullUrl: string;
+  /** When it was uploaded. The console groups photos into batches by this. */
+  createdAt: number;
 };
 
 export type ScanHit = {
@@ -110,6 +112,33 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
  * rather than that they are absent from the photographs, which makes it a list
  * to act on rather than a log to read.
  */
+/** A photo waiting in the recycle bin. */
+export type BinPhoto = {
+  id: string;
+  fileName: string;
+  width: number;
+  height: number;
+  createdAt: number;
+  thumbUrl: string;
+  fullUrl: string;
+};
+
+/** One entry in the recycle bin: a deleted selection of photos, or a whole event. */
+export type BinEntry = {
+  id: string;
+  kind: "photos" | "event";
+  collectionId: string;
+  collectionName: string;
+  /** For a selection, the photos still in the bin. */
+  photoIds: string[];
+  /** For an event, how many photos it held when it was deleted. */
+  photoCount: number;
+  deletedAt: number;
+  deletedBy: string;
+  expiresAt: number;
+  preview?: BinPhoto[];
+};
+
 export type WaitingRow = {
   userId: string;
   fullName: string;
@@ -159,7 +188,10 @@ export const api = {
       out.push(...page.photos);
       cursor = page.cursor;
     } while (cursor);
-    return out;
+    // Newest first across the whole event. Storage lists photos by id, and ids
+    // are random, so each page arrives in no useful order and only sorting the
+    // complete list puts the latest upload at the top.
+    return out.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
   },
 
   saveFaceProfile: (references: number[][], imageKey?: string) =>
@@ -190,10 +222,37 @@ export const api = {
     call<{ ok: true; clearedScans: number }>("/api/face-profile", { method: "DELETE" }),
 
   /** Deletes named photos, or the whole collection when none are named. */
-  deletePhotos: (collectionId: string, photos?: string[]) =>
-    call<{ deleted: number; collectionRemoved: boolean }>("/media/delete", {
+  /**
+   * Moves photos, or a whole event when `photos` is left out, to the recycle
+   * bin. `groupId` adds this request to the entry an earlier slice made.
+   */
+  deletePhotos: (collectionId: string, photos?: string[], groupId?: string) =>
+    call<{ deleted: number; collectionRemoved: boolean; groupId: string | null }>("/media/delete", {
       method: "POST",
-      body: JSON.stringify({ collection: collectionId, ...(photos ? { photos } : {}) }),
+      body: JSON.stringify({
+        collection: collectionId,
+        ...(photos ? { photos } : {}),
+        ...(groupId ? { groupId } : {}),
+      }),
+    }),
+
+  renameCollection: (collectionId: string, name: string) =>
+    call<Collection>(`/api/collections/${collectionId}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+
+  listBin: () => call<{ groups: BinEntry[] }>("/api/bin").then((r) => r.groups),
+
+  binEntry: (id: string) => call<{ group: BinEntry; photos: BinPhoto[] }>(`/api/bin/${encodeURIComponent(id)}`),
+
+  restoreFromBin: (id: string, photos?: string[]) =>
+    call<{ restored: number; remaining: number; collectionId: string }>(
+      `/api/bin/${encodeURIComponent(id)}/restore`,
+      { method: "POST", body: JSON.stringify(photos ? { photos } : {}) },
+    ),
+
+  deleteFromBin: (id: string, photos?: string[]) =>
+    call<{ deleted: number; remaining: number }>(`/api/bin/${encodeURIComponent(id)}/delete`, {
+      method: "POST",
+      body: JSON.stringify(photos ? { photos } : {}),
     }),
 };
 

@@ -12,9 +12,9 @@ import { useTheme, type ThemePref } from "@/lib/theme";
 export const Route = createFileRoute("/settings")({
   head: () => ({
     meta: [
-      { title: "Settings — VAYAM Designers Gallery" },
+      { title: "Settings | VAYAM Designers Gallery" },
       { name: "description", content: "Appearance, privacy and account controls for VAYAM Designers Gallery." },
-      { property: "og:title", content: "Settings — VAYAM Designers Gallery" },
+      { property: "og:title", content: "Settings | VAYAM Designers Gallery" },
       { property: "og:description", content: "Appearance, privacy and account controls for VAYAM Designers Gallery." },
     ],
   }),

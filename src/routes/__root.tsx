@@ -75,7 +75,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "VAYAM Designers Gallery — Find every photo you're in" },
+      { title: "VAYAM Designers Gallery | Find every photo you're in" },
       { name: "description", content: "Private, on-device face matching for your photo library." },
       { property: "og:title", content: "VAYAM Designers Gallery" },
       { property: "og:description", content: "Private, on-device face matching for your photo library." },

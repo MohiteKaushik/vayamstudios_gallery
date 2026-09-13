@@ -4,6 +4,7 @@ import { Layers, UserRound } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { MembersPanel } from "@/components/MembersPanel";
 import { WaitingPanel } from "@/components/WaitingPanel";
+import { RecycleBinPanel } from "@/components/RecycleBinPanel";
 import { EventShowcase } from "@/components/EventShowcase";
 import { GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
 import { api } from "@/lib/api";
@@ -14,9 +15,9 @@ import { useIsAdmin } from "@/lib/roles";
 export const Route = createFileRoute("/home")({
   head: () => ({
     meta: [
-      { title: "Home — VAYAM Designers Gallery" },
+      { title: "Home | VAYAM Designers Gallery" },
       { name: "description", content: "Set up your face profile, then find yourself in the event photographs." },
-      { property: "og:title", content: "Home — VAYAM Designers Gallery" },
+      { property: "og:title", content: "Home | VAYAM Designers Gallery" },
       { property: "og:description", content: "Set up your face profile, then find yourself in the event photographs." },
     ],
   }),
@@ -109,6 +110,7 @@ function Home({ userId }: { userId: string }) {
         </section>
         {collectionList}
         <WaitingPanel />
+        <RecycleBinPanel />
         <MembersPanel />
       </AppShell>
     );

@@ -29,6 +29,28 @@ export const contact = {
   websiteHref: "https://vayamdesigners.com",
 } as const;
 
+/**
+ * The studio's office, as shown under "Contact us" on every page.
+ *
+ * The phone and WhatsApp come from `contact` above, so the site shows one number
+ * everywhere and changing it is a change in one place. The address, hours and
+ * the info@ mailbox are the office's own and appear only here.
+ */
+export const office = {
+  address: "SVL Pride, 501, Nagole, Hyderabad, Telangana 500039",
+  mapsHref:
+    "https://www.google.com/maps/search/?api=1&query=" +
+    encodeURIComponent("SVL Pride, Nagole, Hyderabad, Telangana 500039"),
+  hours: "Sunday to Saturday, 9:00 AM to 9:00 PM",
+  email: "info@vayamdesigners.com",
+  emailHref: "mailto:info@vayamdesigners.com",
+  phoneDisplay: contact.phoneDisplay,
+  phoneHref: contact.phoneHref,
+  whatsappHref: contact.whatsappHref,
+  websiteDisplay: "vayamdesigners.com",
+  websiteHref: "https://vayamdesigners.com",
+} as const;
+
 export type VayamEvent = {
   name: string;
   /** Where it was held, when that is part of how people refer to it. */

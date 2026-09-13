@@ -10,6 +10,10 @@
   // TanStack. Pointing this at the framework entry instead means the media
   // routes never run and every photo request 404s.
   "main": "src/server.ts",
+
+  // Once a day at 02:00 IST, clear anything that has been in the recycle bin
+  // for more than thirty days. Opening the bin in the console does the same.
+  "triggers": { "crons": ["30 20 * * *"] },
   "observability": { "enabled": true },
 
   // The interface is served as static assets. Those are free and unlimited on

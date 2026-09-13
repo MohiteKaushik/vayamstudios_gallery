@@ -2,7 +2,7 @@ import "./lib/error-capture";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
-import { handleMediaRequest, type MediaEnv } from "./lib/media.server";
+import { handleMediaRequest, purgeExpired, type MediaEnv } from "./lib/media.server";
 import { handleApiRequest } from "./lib/api.server";
 
 type ServerEntry = {
@@ -69,5 +69,19 @@ export default {
         headers: { "content-type": "text/html; charset=utf-8" },
       });
     }
+  },
+
+  /**
+   * Once a day, clears anything that has been in the recycle bin for more than
+   * thirty days. Opening the bin in the console does the same, so this is what
+   * keeps storage tidy when nobody has looked at the bin in a while.
+   */
+  async scheduled(_controller: unknown, env: unknown, ctx: { waitUntil: (p: Promise<unknown>) => void }) {
+    ctx.waitUntil(
+      purgeExpired(env as MediaEnv).then(
+        (n) => console.log(`[bin] cleared ${n} expired entr${n === 1 ? "y" : "ies"}`),
+        (e) => console.error("[bin] scheduled clearing failed", e),
+      ),
+    );
   },
 };
