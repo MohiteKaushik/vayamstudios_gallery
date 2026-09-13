@@ -244,6 +244,15 @@ export const api = {
       body: JSON.stringify({ items }),
     }),
 
+  pastEventRenames: () =>
+    call<{ renames: Record<string, string> }>("/api/site/past-events").then((r) => r.renames),
+
+  renamePastEvent: (id: string, title: string) =>
+    call<{ renames: Record<string, string> }>("/api/site/past-events", {
+      method: "PUT",
+      body: JSON.stringify({ id, title }),
+    }).then((r) => r.renames),
+
   homeCover: () =>
     call<{ coverUrl: string | null; collectionId: string | null; photoId: string | null }>("/api/site/cover"),
 

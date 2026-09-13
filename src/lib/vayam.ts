@@ -51,6 +51,8 @@ export const office = {
 } as const;
 
 export type VayamEvent = {
+  /** Never shown. Renames are stored against it, so it must never change. */
+  id: string;
   name: string;
   /** Where it was held, when that is part of how people refer to it. */
   place?: string;
@@ -62,24 +64,32 @@ export type VayamEvent = {
  * is not sorted or grouped, because it is how they present themselves.
  */
 export const events: VayamEvent[] = [
-  { name: "CareerNexus", year: "2024" },
-  { name: "T Hub Community Fest" },
-  { name: "8Matrix Design Conclave" },
-  { name: "Sattva Wellness Conclave" },
-  { name: "CareerNexus", year: "2025" },
-  { name: "Indian Russian Cultural Harmony" },
-  { name: "TribeMeet 24", place: "Hyderabad" },
-  { name: "TribeMeet 25", place: "Vijayawada" },
-  { name: "The Conyape Retreat" },
+  { id: "careernexus-2024", name: "CareerNexus", year: "2024" },
+  { id: "t-hub-community-fest", name: "T Hub Community Fest" },
+  { id: "8matrix-design-conclave", name: "8Matrix Design Conclave" },
+  { id: "sattva-wellness-conclave", name: "Sattva Wellness Conclave" },
+  { id: "careernexus-2025", name: "CareerNexus", year: "2025" },
+  { id: "indian-russian-cultural-harmony", name: "Indian Russian Cultural Harmony" },
+  { id: "tribemeet-24", name: "TribeMeet 24", place: "Hyderabad" },
+  { id: "tribemeet-25", name: "TribeMeet 25", place: "Vijayawada" },
+  { id: "conyape-retreat", name: "The Conyape Retreat" },
   // One event run under both names, so it reads as a single line rather than
   // as two entries a visitor would take for separate pieces of work.
-  { name: "District 150-Ioniq Connect" },
-  { name: "TTPOC CARREER NEXUS 3.0" },
+  { id: "district-150-ioniq-connect", name: "District 150-Ioniq Connect" },
+  { id: "ttpoc-carreer-nexus-3", name: "TTPOC CARREER NEXUS 3.0" },
 ];
 
-/** The full title as it should read on screen. */
+/** The full title as it should read on screen, before any rename. */
 export function eventTitle(e: VayamEvent): string {
   return [e.name, e.year].filter(Boolean).join(" ");
+}
+
+/** Renamed titles an admin saved, by event id. */
+export type EventRenames = Record<string, string>;
+
+/** The title to show: the admin's rename if there is one. */
+export function shownTitle(e: VayamEvent, renames: EventRenames | undefined): string {
+  return renames?.[e.id] ?? eventTitle(e);
 }
 
 export function eventSubtitle(e: VayamEvent): string | null {

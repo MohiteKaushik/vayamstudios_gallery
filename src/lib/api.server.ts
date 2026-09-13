@@ -65,6 +65,7 @@ import { searchCollection, indexPhotoFaces } from "./face-index.server.ts";
 import { MATCH_MAX_DISTANCE } from "./face.ts";
 import { cosineDistance } from "./insightface.ts";
 import { isFingerprint } from "./duplicates.ts";
+import { events as pastEvents, eventTitle } from "./vayam.ts";
 import type { R2Bucket } from "./storage.server.ts";
 
 export const API_PREFIX = "/api";
@@ -363,6 +364,13 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
     return json({ error: "Not found" }, 404);
   }
 
+  if (head === "site" && rest[0] === "past-events") {
+    if (request.method === "GET") return json({ renames: await readRenames(env) });
+    if (!isAdmin) return json({ error: "Admins only" }, 403);
+    if (request.method === "PUT") return renamePastEvent(request, env);
+    return json({ error: "Method not allowed" }, 405);
+  }
+
   if (head === "site" && rest[0] === "cover") {
     if (request.method === "GET") return json(await readHomeCover(env));
     if (!isAdmin) return json({ error: "Admins only" }, 403);
@@ -505,6 +513,41 @@ async function unindexedPhotos(
 
   const pending = [...photos].filter((id) => !faces.has(id));
   return { photoIds: pending, total: photos.size, indexed: faces.size };
+}
+
+const PAST_EVENTS_KEY = "site/past-events.json";
+
+async function readRenames(env: MediaEnv): Promise<Record<string, string>> {
+  const stored = await readJson<{ renames?: Record<string, string> }>(env.PHOTOS, PAST_EVENTS_KEY);
+  const known = new Set(pastEvents.map((e) => e.id));
+  // Only ids still in the list count, so a removed event leaves nothing behind.
+  return Object.fromEntries(
+    Object.entries(stored?.renames ?? {}).filter(([id, title]) => known.has(id) && typeof title === "string"),
+  );
+}
+
+/**
+ * Renames one of the studio's past events. Saving the original title again
+ * removes the rename rather than storing a copy of it.
+ */
+async function renamePastEvent(request: Request, env: MediaEnv): Promise<Response> {
+  let body: { id?: unknown; title?: unknown };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Malformed body" }, 400);
+  }
+  const event = pastEvents.find((e) => e.id === body.id);
+  if (!event) return json({ error: "No such event" }, 404);
+  const title = typeof body.title === "string" ? body.title.replace(/\s+/g, " ").trim() : "";
+  if (title.length < 2 || title.length > 120) {
+    return json({ error: "Use a name between 2 and 120 characters" }, 400);
+  }
+  const renames = await readRenames(env);
+  if (title === eventTitle(event)) delete renames[event.id];
+  else renames[event.id] = title;
+  await writeJson(env.PHOTOS, PAST_EVENTS_KEY, { renames });
+  return json({ renames });
 }
 
 const HOME_COVER_KEY = "site/home-cover.json";

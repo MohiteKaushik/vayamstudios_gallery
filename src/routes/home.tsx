@@ -112,6 +112,7 @@ function Home({ userId }: { userId: string }) {
         </section>
         <CoverSettings />
         {collectionList}
+        <EventShowcase editable />
         <WaitingPanel />
         <RecycleBinPanel />
         <MembersPanel />

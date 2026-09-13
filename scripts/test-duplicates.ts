@@ -315,6 +315,33 @@ console.log("\n=== 8. saving fingerprints through the API ===");
   const cleared = await coverCall(admin, "DELETE");
   const after = await coverCall(viewerCookie, "GET");
   check("an admin can remove the cover", cleared.status === 200 && after.data.coverUrl === null);
+
+  console.log("\n=== 10. renaming past events ===");
+  const pastCall = async (cookie: string, method: string, body?: unknown) => {
+    const res = await handleApiRequest(
+      new Request("https://gallery.test/api/site/past-events", {
+        method,
+        headers: { cookie, ...(body ? { "content-type": "application/json" } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      }),
+      env as never,
+    );
+    return { status: res!.status, data: (await res!.json()) as { renames?: Record<string, string> } };
+  };
+  const none = await pastCall(viewerCookie, "GET");
+  check("with no renames, members get the original list", none.status === 200 && Object.keys(none.data.renames ?? {}).length === 0);
+  const memberRename = await pastCall(viewerCookie, "PUT", { id: "conyape-retreat", title: "Hijack" });
+  check("a member cannot rename a past event", memberRename.status === 403, `${memberRename.status}`);
+  const unknown = await pastCall(admin, "PUT", { id: "not-an-event", title: "Anything" });
+  check("an unknown event is refused", unknown.status === 404, `${unknown.status}`);
+  const blank = await pastCall(admin, "PUT", { id: "conyape-retreat", title: "  " });
+  check("an empty name is refused", blank.status === 400, `${blank.status}`);
+  const renamed = await pastCall(admin, "PUT", { id: "conyape-retreat", title: "  The   Conyape Retreat 2025 " });
+  check("an admin can rename, with spaces tidied", renamed.status === 200 && renamed.data.renames?.["conyape-retreat"] === "The Conyape Retreat 2025", JSON.stringify(renamed.data));
+  const memberSees = await pastCall(viewerCookie, "GET");
+  check("members then see the new name", memberSees.data.renames?.["conyape-retreat"] === "The Conyape Retreat 2025");
+  const reverted = await pastCall(admin, "PUT", { id: "conyape-retreat", title: "The Conyape Retreat" });
+  check("saving the original name removes the rename", reverted.status === 200 && !("conyape-retreat" in (reverted.data.renames ?? {})));
 }
 
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"}`);
