@@ -78,6 +78,8 @@ export type PhotoMeta = {
   facesCount: number;
   uploadedBy: string;
   createdAt: number;
+  /** For duplicate detection, see duplicates.ts. Set the first time the console looks. */
+  fingerprint?: string;
 };
 
 const json = (body: unknown, status = 200) =>

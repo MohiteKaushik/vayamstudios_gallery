@@ -29,6 +29,8 @@ export type Photo = {
   fullUrl: string;
   /** When it was uploaded. The console groups photos into batches by this. */
   createdAt: number;
+  /** For duplicate detection. Null until the console has looked at this photo. */
+  fingerprint: string | null;
 };
 
 export type ScanHit = {
@@ -234,6 +236,12 @@ export const api = {
         ...(photos ? { photos } : {}),
         ...(groupId ? { groupId } : {}),
       }),
+    }),
+
+  saveFingerprints: (collectionId: string, items: { photoId: string; fingerprint: string }[]) =>
+    call<{ saved: number }>(`/api/collections/${collectionId}/fingerprints`, {
+      method: "POST",
+      body: JSON.stringify({ items }),
     }),
 
   renameCollection: (collectionId: string, name: string) =>

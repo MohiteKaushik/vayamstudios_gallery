@@ -64,6 +64,7 @@ import { validateSignUp } from "./members.ts";
 import { searchCollection, indexPhotoFaces } from "./face-index.server.ts";
 import { MATCH_MAX_DISTANCE } from "./face.ts";
 import { cosineDistance } from "./insightface.ts";
+import { isFingerprint } from "./duplicates.ts";
 import type { R2Bucket } from "./storage.server.ts";
 
 export const API_PREFIX = "/api";
@@ -332,6 +333,10 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
       if (!isAdmin) return json({ error: "Admins only" }, 403);
       return renameCollection(request, env, cid);
     }
+    if (rest[1] === "fingerprints" && request.method === "POST") {
+      if (!isAdmin) return json({ error: "Admins only" }, 403);
+      return saveFingerprints(request, env, cid);
+    }
     if (rest[1] === "photos" && request.method === "GET") {
       // An event in the recycle bin has no record, and nobody should be able to
       // page through its photographs by id while it is there.
@@ -492,6 +497,34 @@ async function unindexedPhotos(
 }
 
 /**
+ * Stores fingerprints the console computed, so the next duplicate check only
+ * reads photos uploaded since. Anything malformed is ignored rather than
+ * refused, because one bad entry should not cost the other four hundred.
+ */
+async function saveFingerprints(request: Request, env: MediaEnv, cid: string): Promise<Response> {
+  let body: { items?: unknown };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Malformed body" }, 400);
+  }
+  const items = Array.isArray(body.items) ? body.items.slice(0, 500) : [];
+  const valid = items.filter(
+    (i): i is { photoId: string; fingerprint: string } =>
+      !!i && typeof i === "object" && isSafeId((i as { photoId?: unknown }).photoId as string) &&
+      isFingerprint((i as { fingerprint?: unknown }).fingerprint),
+  );
+  const results = await mapLimit(valid, READ_CONCURRENCY, async ({ photoId, fingerprint }) => {
+    const key = photoMetaKey(cid, photoId);
+    const meta = await readJson<PhotoMeta>(env.PHOTOS, key);
+    if (!meta) return false;
+    if (meta.fingerprint !== fingerprint) await writeJson(env.PHOTOS, key, { ...meta, fingerprint });
+    return true;
+  });
+  return json({ saved: results.filter(Boolean).length });
+}
+
+/**
  * Renames an event. Only the name changes; every photograph, face and search
  * result stays attached to the event's id, which never changes.
  */
@@ -578,6 +611,7 @@ async function listPhotos(
       height: p.height,
       facesCount: p.facesCount,
       createdAt: p.createdAt,
+      fingerprint: p.fingerprint ?? null,
       thumbUrl: mediaUrl(cid, p.id, "t"),
       fullUrl: mediaUrl(cid, p.id),
     }));

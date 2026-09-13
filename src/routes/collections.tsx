@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { Check, CheckCheck, ChevronLeft, ImagePlus, Layers, Pencil, Plus, Radio, RefreshCw, ScanFace, Trash2, X } from "lucide-react";
+import { Check, CheckCheck, ChevronLeft, Copy, ImagePlus, Layers, Pencil, Plus, Radio, RefreshCw, ScanFace, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
@@ -14,6 +14,7 @@ import { formatCount } from "@/lib/images";
 import { api, ApiError, confidencePercent, type Photo, type ScanHit, type ScanResult } from "@/lib/api";
 import { uploadPhotos, uploadSavings, type BulkProgress } from "@/lib/upload";
 import { keepIndexing, reanalyseCollection } from "@/lib/reanalyse";
+import { DuplicatesPanel } from "@/components/DuplicatesPanel";
 import { dayLabel, timeLabel } from "@/lib/time";
 import { useIsAdmin } from "@/lib/roles";
 
@@ -238,6 +239,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
   useEffect(() => () => watcher?.abort(), [watcher]);
   const [open, setOpen] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [showDuplicates, setShowDuplicates] = useState(false);
 
   const photos = useQuery({
     queryKey: ["photos", collectionId],
@@ -437,6 +439,14 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
           }}
         />
         <div className="flex flex-wrap items-center gap-2">
+          <GlassButton
+            variant={showDuplicates ? "quiet" : "ghost"}
+            icon={<Copy className="size-4" />}
+            onClick={() => setShowDuplicates((v) => !v)}
+            disabled={list.length < 2}
+          >
+            Find duplicates
+          </GlassButton>
           {/* Indexing whatever the uploader script pushes up, as it arrives. */}
           <GlassButton
             variant={watcher ? "danger" : "quiet"}
@@ -519,6 +529,16 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
             Watching for new photos · {formatCount(idle, "photo")} indexed so far. Keep this tab open.
           </span>
         </div>
+      )}
+
+      {showDuplicates && !photos.isLoading && list.length > 1 && (
+        <DuplicatesPanel
+          collectionId={collectionId}
+          photos={list}
+          onClose={() => setShowDuplicates(false)}
+          onDelete={(ids) => removeSelected.mutateAsync(ids)}
+          deleting={removeSelected.isPending}
+        />
       )}
 
       {photos.isLoading ? (
