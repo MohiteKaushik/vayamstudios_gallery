@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronLeft, Globe, Mail, MessageCircle, Pencil, Phone } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -6,6 +7,8 @@ import { GlassButton, GlassCard } from "@/components/ui-kit";
 import { api } from "@/lib/api";
 import { contact, events, eventSubtitle, shownTitle, type EventRenames, type VayamEvent } from "@/lib/vayam";
 
+const RECENT_EVENT_SHOWCASE_ID = "ttpoc-carreer-nexus-3";
+
 function useRenames() {
   return useQuery({ queryKey: ["past-events"], retry: false, queryFn: api.pastEventRenames });
 }
@@ -13,9 +16,8 @@ function useRenames() {
 /**
  * The studio's past work, shown to a member once their face profile is set up.
  *
- * Choosing an event does not open photos. It opens a way to reach the team,
- * which is the point: a member browsing this is a prospective client looking at
- * what VAYAM has run, and the next step is a conversation.
+ * Most past events open a way to reach the team. The current TTPOC event opens
+ * the Recent Event gallery because those photos are published in the app.
  */
 export function EventShowcase({ editable = false }: { editable?: boolean }) {
   const [selected, setSelected] = useState<VayamEvent | null>(null);
@@ -59,37 +61,78 @@ export function EventShowcase({ editable = false }: { editable?: boolean }) {
               </li>
             );
           }
+          if (event.id === RECENT_EVENT_SHOWCASE_ID) {
+            return (
+              <li key={event.id}>
+                <Link
+                  to="/collections"
+                  search={{ shared: undefined }}
+                  aria-label={`Open ${shownTitle(event, renames)} photos`}
+                >
+                  <EventRow event={event} number={number} place={place} renames={renames} />
+                </Link>
+              </li>
+            );
+          }
           return (
             <li key={event.id}>
-              <GlassCard
-                interactive
-                role="button"
-                tabIndex={0}
-                onClick={() => setSelected(event)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    setSelected(event);
-                  }
-                }}
-                className="flex items-center gap-4 px-5 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <span className="w-6 shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
-                  {String(number).padStart(2, "0")}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium tracking-[-0.01em]">
-                    {shownTitle(event, renames)}
-                  </span>
-                  {place && <span className="block text-xs text-muted-foreground">{place}</span>}
-                </span>
-                <ChevronLeft className="size-4 shrink-0 rotate-180 text-muted-foreground" />
-              </GlassCard>
+              <EventRow
+                event={event}
+                number={number}
+                place={place}
+                renames={renames}
+                onOpen={() => setSelected(event)}
+              />
             </li>
           );
         })}
       </ul>
     </section>
+  );
+}
+
+function EventRow({
+  event,
+  number,
+  place,
+  renames,
+  onOpen,
+}: {
+  event: VayamEvent;
+  number: number;
+  place: string | null;
+  renames: EventRenames | undefined;
+  onOpen?: () => void;
+}) {
+  return (
+    <GlassCard
+      interactive
+      role={onOpen ? "button" : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      onClick={onOpen}
+      onKeyDown={
+        onOpen
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onOpen();
+              }
+            }
+          : undefined
+      }
+      className="flex items-center gap-4 px-5 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span className="w-6 shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+        {String(number).padStart(2, "0")}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium tracking-[-0.01em]">
+          {shownTitle(event, renames)}
+        </span>
+        {place && <span className="block text-xs text-muted-foreground">{place}</span>}
+      </span>
+      <ChevronLeft className="size-4 shrink-0 rotate-180 text-muted-foreground" />
+    </GlassCard>
   );
 }
 

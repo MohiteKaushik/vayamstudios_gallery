@@ -174,13 +174,15 @@ function RecentEventCard() {
             src={cover}
             alt=""
             aria-hidden
-            className="absolute inset-0 -z-10 size-full scale-110 object-cover blur-md"
+            className="absolute inset-0 -z-10 size-full scale-105 object-cover blur-[6px]"
           />
-          <div aria-hidden className="absolute inset-0 -z-10 bg-background/60" />
+          <div aria-hidden className="absolute inset-0 -z-10 bg-background/50" />
         </>
       )}
       <Layers className={cn("mb-5 size-8", cover ? "text-foreground/80" : "text-muted-foreground")} strokeWidth={1.4} />
-      <p className="text-lg font-medium tracking-[-0.02em]">Open recent event</p>
+      <p className={cn("text-lg font-medium tracking-[-0.02em]", cover && "drop-shadow-[0_1px_8px_rgba(0,0,0,0.65)]")}>
+        Open recent event
+      </p>
       <p className={cn("mt-1 text-sm", cover ? "text-foreground/80" : "text-muted-foreground")}>
         Photos are published by the organisers
       </p>
