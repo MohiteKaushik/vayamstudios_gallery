@@ -174,7 +174,7 @@ function RecentEventCard() {
             src={cover}
             alt=""
             aria-hidden
-            className="absolute inset-0 -z-10 size-full scale-105 object-cover blur-[4px]"
+            className="absolute inset-0 -z-10 size-full scale-105 object-cover blur-[2px]"
           />
           <div aria-hidden className="absolute inset-0 -z-10 bg-background/50" />
         </>
