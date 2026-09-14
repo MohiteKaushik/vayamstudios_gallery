@@ -45,6 +45,12 @@ export type MediaEnv = {
   ADMIN_EMAIL?: string;
   /** Operator password, used once to create the console account on first run. */
   ADMIN_PASSWORD?: string;
+  /** Google OAuth web client id, for Sign in with Google. */
+  GOOGLE_CLIENT_ID?: string;
+  /** Google OAuth web client secret, for exchanging the callback code. */
+  GOOGLE_CLIENT_SECRET?: string;
+  /** Optional exact OAuth redirect URI registered in Google Cloud. */
+  GOOGLE_REDIRECT_URI?: string;
 };
 
 /** Prefix every image route sits under. */

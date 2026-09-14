@@ -49,8 +49,11 @@ import {
   putMember,
   toPublicMember,
   createMember,
+  createGoogleMember,
   authenticate,
   ensureRole,
+  getMemberByGoogleSub,
+  linkGoogleMember,
   type MemberRecord,
 } from "./auth/members.server.ts";
 import {
@@ -58,9 +61,10 @@ import {
   sessionCookieHeader,
   clearSessionCookieHeader,
   isSecureRequest,
+  readCookie,
 } from "./auth/session.ts";
 import { hashPassword } from "./auth/password.ts";
-import { validateSignUp } from "./members.ts";
+import { normalisePhone, validateEmail, validatePassword, validatePhone, validateSignUp } from "./members.ts";
 import { searchCollection, indexPhotoFaces } from "./face-index.server.ts";
 import { MATCH_MAX_DISTANCE } from "./face.ts";
 import { cosineDistance } from "./insightface.ts";
@@ -307,7 +311,7 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
   const [head, ...rest] = parts;
 
   // Sign-in and sign-up are the only routes reachable without a session.
-  if (head === "auth") return handleAuth(request, env, rest[0] ?? "");
+  if (head === "auth") return handleAuth(request, env, rest);
 
   const userId = await currentUserId(request, env);
 
@@ -344,7 +348,7 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
       if (!(await env.PHOTOS.head(collectionKey(cid)))) {
         return json({ error: "This event is not available" }, 404);
       }
-      return listPhotos(env, cid, url.searchParams.get("cursor"));
+      return listPhotos(env, cid, url.searchParams.get("cursor"), url.searchParams.get("limit"));
     }
     if (rest[1] === "status" && request.method === "GET") {
       return json(await collectionStatus(env, cid));
@@ -685,11 +689,14 @@ async function listPhotos(
   env: MediaEnv,
   cid: string,
   cursor: string | null,
+  limit: string | null,
 ): Promise<Response> {
   const prefix = `meta/photo/${cid}/`;
+  const requested = Number(limit ?? 40);
+  const pageSize = Number.isFinite(requested) ? Math.min(50, Math.max(20, Math.floor(requested))) : 40;
   const page = await env.PHOTOS.list({
     prefix,
-    limit: 200,
+    limit: pageSize,
     ...(cursor ? { cursor } : {}),
   });
 
@@ -728,11 +735,65 @@ async function listPhotos(
  * outside service, which is the point: two identity systems disagreeing about
  * who someone is caused every confusing permission error in this app.
  */
-async function handleAuth(request: Request, env: MediaEnv, action: string): Promise<Response> {
-  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+const GOOGLE_STATE_COOKIE = "vayam_google_state";
+
+function randomBase64Url(bytes = 32): string {
+  const values = crypto.getRandomValues(new Uint8Array(bytes));
+  let binary = "";
+  for (const b of values) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function googleRedirectUri(request: Request, env: MediaEnv): string {
+  if (env.GOOGLE_REDIRECT_URI) return env.GOOGLE_REDIRECT_URI;
+  const url = new URL(request.url);
+  return `${url.origin}/api/auth/google/callback`;
+}
+
+function oauthStateCookie(state: string, secure: boolean): string {
+  return [
+    `${GOOGLE_STATE_COOKIE}=${state}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    secure ? "Secure" : null,
+    "Max-Age=600",
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
+function clearOauthStateCookie(secure: boolean): string {
+  return [
+    `${GOOGLE_STATE_COOKIE}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    secure ? "Secure" : null,
+    "Max-Age=0",
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
+function redirectToAuthError(error: string, secure: boolean): Response {
+  const headers = new Headers({ location: `/auth?mode=in&error=${encodeURIComponent(error)}` });
+  headers.append("set-cookie", clearOauthStateCookie(secure));
+  return new Response(null, { status: 302, headers });
+}
+
+async function handleAuth(request: Request, env: MediaEnv, rest: string[]): Promise<Response> {
+  const action = rest[0] ?? "";
   if (!env.SESSION_SECRET) return json({ error: "SESSION_SECRET is not configured" }, 500);
 
   const secure = isSecureRequest(request);
+
+  if (action === "google") {
+    if (rest[1] === "callback") return handleGoogleCallback(request, env, secure);
+    return handleGoogleStart(request, env, secure);
+  }
+
+  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   if (action === "signout") {
     return new Response(JSON.stringify({ ok: true }), {
@@ -827,7 +888,182 @@ async function handleAuth(request: Request, env: MediaEnv, action: string): Prom
     return signedIn(withRole, env.SESSION_SECRET, secure);
   }
 
+  if (action === "reset-password") {
+    const phone = normalisePhone(body.phone ?? "");
+    const errors: { email?: string; phone?: string; password?: string } = {};
+    const emailError = validateEmail(email);
+    const phoneError = validatePhone(phone);
+    const passwordError = validatePassword(password);
+    if (emailError) errors.email = emailError;
+    if (phoneError) errors.phone = phoneError;
+    if (passwordError) errors.password = passwordError;
+    if (Object.keys(errors).length > 0) return json({ error: "Check the form", errors }, 400);
+
+    const member = await getMemberByEmail(env.PHOTOS, email);
+    if (!member || !member.phone || member.phone !== phone) {
+      return json({ error: "Those details do not match an account" }, 401);
+    }
+
+    await putMember(env.PHOTOS, {
+      ...member,
+      passwordHash: await hashPassword(password),
+      authProvider: "password",
+    });
+    return json({ ok: true });
+  }
+
   return json({ error: "Not found" }, 404);
+}
+
+export async function handleGoogleRedirectCallback(
+  request: Request,
+  env: MediaEnv,
+): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (url.pathname !== "/" || !url.searchParams.get("state")) return null;
+  if (!url.searchParams.get("code") && !url.searchParams.get("error")) return null;
+  const secure = isSecureRequest(request);
+  try {
+    return await handleGoogleCallback(request, env, secure);
+  } catch (error) {
+    console.error("[auth] Google root callback failed", error);
+    return redirectToAuthError("google-callback", secure);
+  }
+}
+
+async function handleGoogleStart(
+  request: Request,
+  env: MediaEnv,
+  secure: boolean,
+): Promise<Response> {
+  if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    return redirectToAuthError("google-config", secure);
+  }
+
+  const state = randomBase64Url();
+  const target = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  target.searchParams.set("client_id", env.GOOGLE_CLIENT_ID);
+  target.searchParams.set("redirect_uri", googleRedirectUri(request, env));
+  target.searchParams.set("response_type", "code");
+  target.searchParams.set("scope", "openid email profile");
+  target.searchParams.set("state", state);
+  target.searchParams.set("prompt", "select_account");
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: target.toString(),
+      "set-cookie": oauthStateCookie(state, secure),
+    },
+  });
+}
+
+type GoogleTokenResponse = {
+  access_token?: string;
+  token_type?: string;
+  error?: string;
+  error_description?: string;
+};
+
+type GoogleUserInfo = {
+  sub?: string;
+  email?: string;
+  email_verified?: boolean;
+  name?: string;
+};
+
+async function handleGoogleCallback(
+  request: Request,
+  env: MediaEnv,
+  secure: boolean,
+): Promise<Response> {
+  if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
+  const sessionSecret = env.SESSION_SECRET;
+  if (!sessionSecret) return json({ error: "SESSION_SECRET is not configured" }, 500);
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    return redirectToAuthError("google-config", secure);
+  }
+
+  const url = new URL(request.url);
+  const state = url.searchParams.get("state");
+  const code = url.searchParams.get("code");
+  const expectedState = readCookie(request, GOOGLE_STATE_COOKIE);
+  if (!state || !expectedState || state !== expectedState) {
+    return redirectToAuthError("google-state", secure);
+  }
+  if (!code || url.searchParams.get("error")) {
+    return redirectToAuthError("google-cancelled", secure);
+  }
+
+  let tokenRes: Response;
+  try {
+    tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: env.GOOGLE_CLIENT_ID,
+        client_secret: env.GOOGLE_CLIENT_SECRET,
+        code,
+        grant_type: "authorization_code",
+        redirect_uri: googleRedirectUri(request, env),
+      }),
+    });
+  } catch (error) {
+    console.error("[auth] Google token request failed", error);
+    return redirectToAuthError("google-token", secure);
+  }
+  const token = (await tokenRes.json().catch(() => ({}))) as GoogleTokenResponse;
+  if (!tokenRes.ok || !token.access_token) {
+    console.error("[auth] Google token exchange failed", token.error ?? token.error_description);
+    return redirectToAuthError("google-token", secure);
+  }
+
+  let profileRes: Response;
+  try {
+    profileRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+      headers: { authorization: `Bearer ${token.access_token}` },
+    });
+  } catch (error) {
+    console.error("[auth] Google profile request failed", error);
+    return redirectToAuthError("google-profile", secure);
+  }
+  const profile = (await profileRes.json().catch(() => ({}))) as GoogleUserInfo;
+  if (
+    !profileRes.ok ||
+    !profile.sub ||
+    !profile.email ||
+    profile.email_verified !== true
+  ) {
+    return redirectToAuthError("google-profile", secure);
+  }
+
+  let member = await getMemberByGoogleSub(env.PHOTOS, profile.sub);
+  if (!member) {
+    const existing = await getMemberByEmail(env.PHOTOS, profile.email);
+    if (existing) {
+      member = await linkGoogleMember(env.PHOTOS, existing, profile.sub);
+      if (!member) return redirectToAuthError("google-linked", secure);
+    } else {
+      const created = await createGoogleMember(env.PHOTOS, {
+        email: profile.email,
+        fullName: profile.name ?? "",
+        googleSub: profile.sub,
+      });
+      if (!created.ok) return redirectToAuthError("google-create", secure);
+      member = created.member;
+    }
+  } else {
+    member = { ...member, lastSignInAt: Date.now() };
+    await putMember(env.PHOTOS, member).catch(() => undefined);
+  }
+
+  const withRole = await ensureRole(env.PHOTOS, member, env.ADMIN_EMAIL);
+  const session = await createSessionToken(withRole.id, sessionSecret);
+  const headers = new Headers({ location: "/home" });
+  headers.append("set-cookie", clearOauthStateCookie(secure));
+  headers.append("set-cookie", sessionCookieHeader(session, { secure }));
+  return new Response(null, { status: 302, headers });
 }
 
 async function signedIn(

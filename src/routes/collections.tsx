@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { Check, CheckCheck, ChevronLeft, Copy, Image as ImageIcon, ImagePlus, Layers, Pencil, Plus, Radio, RefreshCw, ScanFace, Trash2, X } from "lucide-react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import { Check, CheckCheck, ChevronLeft, Copy, Image as ImageIcon, ImagePlus, Layers, Loader2, Pencil, Plus, Radio, RefreshCw, ScanFace, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
@@ -17,6 +17,8 @@ import { keepIndexing, reanalyseCollection } from "@/lib/reanalyse";
 import { DuplicatesPanel } from "@/components/DuplicatesPanel";
 import { dayLabel, timeLabel } from "@/lib/time";
 import { useIsAdmin } from "@/lib/roles";
+
+const PHOTO_PAGE_SIZE = 40;
 
 export const Route = createFileRoute("/collections")({
   validateSearch: (s: Record<string, unknown>) => ({
@@ -224,6 +226,66 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
+function useInfinitePhotos(collectionId: string) {
+  return useInfiniteQuery({
+    queryKey: ["photos", collectionId],
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => api.listPhotos(collectionId, pageParam, PHOTO_PAGE_SIZE),
+    getNextPageParam: (lastPage) => lastPage.cursor,
+    retry: false,
+  });
+}
+
+function flattenPhotoPages(
+  data: InfiniteData<{ photos: Photo[]; cursor?: string }, unknown> | undefined,
+): Photo[] {
+  return (data?.pages.flatMap((page) => page.photos) ?? []).sort(
+    (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
+  );
+}
+
+function PhotoPageLoader({
+  hasNextPage,
+  isFetchingNextPage,
+  fetchNextPage,
+}: {
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  fetchNextPage: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!hasNextPage) return;
+    const node = ref.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting) && !isFetchingNextPage) {
+          fetchNextPage();
+        }
+      },
+      { rootMargin: "900px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
+
+  if (!hasNextPage && !isFetchingNextPage) return null;
+  return (
+    <div ref={ref} className="flex h-24 items-center justify-center text-sm text-muted-foreground">
+      {isFetchingNextPage ? (
+        <span className="inline-flex items-center gap-2">
+          <Loader2 className="size-4 animate-spin" />
+          Loading more photos
+        </span>
+      ) : (
+        <span className="h-6" aria-hidden />
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------- Admin view ------------------------------- */
 
 function AdminCollection({ collectionId, name }: { collectionId: string; name: string }) {
@@ -241,11 +303,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [showDuplicates, setShowDuplicates] = useState(false);
 
-  const photos = useQuery({
-    queryKey: ["photos", collectionId],
-    queryFn: () => api.allPhotos(collectionId),
-    retry: false,
-  });
+  const photos = useInfinitePhotos(collectionId);
 
   const removeSelected = useMutation({
     // A selection goes to the recycle bin in slices, because moving a photo is
@@ -390,7 +448,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
     }
   }
 
-  const list = photos.data ?? [];
+  const list = flattenPhotoPages(photos.data);
   const grid: GridPhoto[] = list.map(toGridPhoto);
   const batches = groupIntoBatches(list);
 
@@ -424,7 +482,9 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
               ? "Loading photos"
               : photos.isError
                 ? "Photos could not be loaded"
-                : formatCount(list.length, "photo")}
+                : photos.hasNextPage
+                  ? `${formatCount(list.length, "photo")} loaded`
+                  : formatCount(list.length, "photo")}
           </p>
         </div>
         <input
@@ -587,38 +647,45 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
         // Newest first, in the batches they were uploaded in, so a whole upload
         // that turns out to be a duplicate can be selected and removed at once
         // instead of being picked out one photograph at a time.
-        <div className="space-y-10">
-          {batches.map((batch) => {
-            const ids = batch.photos.map((p) => p.id);
-            const everySelected = ids.every((id) => selected.has(id));
-            return (
-              <section key={batch.key} aria-label={batchTitle(batch)}>
-                <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-                  <div>
-                    <h2 className="font-medium tracking-[-0.01em]">{batchTitle(batch)}</h2>
-                    <p className="text-xs text-muted-foreground">
-                      {formatCount(batch.photos.length, "photo")} uploaded
-                    </p>
+        <>
+          <div className="space-y-10">
+            {batches.map((batch) => {
+              const ids = batch.photos.map((p) => p.id);
+              const everySelected = ids.every((id) => selected.has(id));
+              return (
+                <section key={batch.key} aria-label={batchTitle(batch)}>
+                  <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <h2 className="font-medium tracking-[-0.01em]">{batchTitle(batch)}</h2>
+                      <p className="text-xs text-muted-foreground">
+                        {formatCount(batch.photos.length, "photo")} uploaded
+                      </p>
+                    </div>
+                    <GlassButton
+                      variant={everySelected ? "quiet" : "ghost"}
+                      size="sm"
+                      icon={<CheckCheck className="size-4" />}
+                      onClick={() => toggleBatch(ids)}
+                    >
+                      {everySelected ? "Deselect batch" : "Select batch"}
+                    </GlassButton>
                   </div>
-                  <GlassButton
-                    variant={everySelected ? "quiet" : "ghost"}
-                    size="sm"
-                    icon={<CheckCheck className="size-4" />}
-                    onClick={() => toggleBatch(ids)}
-                  >
-                    {everySelected ? "Deselect batch" : "Select batch"}
-                  </GlassButton>
-                </div>
-                <PhotoGrid
-                  photos={batch.photos.map(toGridPhoto)}
-                  onOpen={(i) => setOpen(batch.offset + i)}
-                  selected={selected}
-                  onToggleSelect={toggleOne}
-                />
-              </section>
-            );
-          })}
-        </div>
+                  <PhotoGrid
+                    photos={batch.photos.map(toGridPhoto)}
+                    onOpen={(i) => setOpen(batch.offset + i)}
+                    selected={selected}
+                    onToggleSelect={toggleOne}
+                  />
+                </section>
+              );
+            })}
+          </div>
+          <PhotoPageLoader
+            hasNextPage={photos.hasNextPage}
+            isFetchingNextPage={photos.isFetchingNextPage}
+            fetchNextPage={() => void photos.fetchNextPage()}
+          />
+        </>
       )}
       {open !== null && (
         <PhotoViewer photos={grid} index={open} onIndexChange={setOpen} onClose={() => setOpen(null)} />
@@ -641,11 +708,7 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
   // Raised the first time someone presses Find me without a reference photo.
   const [enrolling, setEnrolling] = useState(false);
 
-  const allPhotos = useQuery({
-    queryKey: ["photos", collectionId],
-    queryFn: () => api.allPhotos(collectionId),
-    retry: false,
-  });
+  const allPhotos = useInfinitePhotos(collectionId);
 
   const results = useQuery({
     queryKey: ["scan", collectionId],
@@ -685,7 +748,8 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
   }
 
   const hits: ScanHit[] = results.data?.hits ?? [];
-  const everything: GridPhoto[] = (allPhotos.data ?? []).map(toGridPhoto);
+  const loadedPhotos = flattenPhotoPages(allPhotos.data);
+  const everything: GridPhoto[] = loadedPhotos.map(toGridPhoto);
   const grid: GridPhoto[] = view === "mine" ? hits.map(toGridHit) : everything;
   const hasScanned = (results.data?.scannedAt ?? 0) > 0;
 
@@ -701,7 +765,9 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
                 : "Not scanned yet"
               : allPhotos.isLoading
                 ? "Loading photos"
-                : `${formatCount(everything.length, "photo")} from this event`}
+                : allPhotos.hasNextPage
+                  ? `${formatCount(everything.length, "photo")} loaded`
+                  : `${formatCount(everything.length, "photo")} from this event`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -740,7 +806,14 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
             description="This event has no photos in it."
           />
         ) : (
-          <PhotoGrid photos={everything} onOpen={setOpen} />
+          <>
+            <PhotoGrid photos={everything} onOpen={setOpen} />
+            <PhotoPageLoader
+              hasNextPage={allPhotos.hasNextPage}
+              isFetchingNextPage={allPhotos.isFetchingNextPage}
+              fetchNextPage={() => void allPhotos.fetchNextPage()}
+            />
+          </>
         )
       ) : results.isLoading ? (
         <PhotoGridSkeleton />

@@ -12,9 +12,12 @@ import { isKnownDevice, rememberDevice } from "@/lib/device";
 export const Route = createFileRoute("/auth")({
   // "up" opens on creating an account and "in" on signing in. Left out, the page
   // decides from whether this device has signed in before.
-  validateSearch: (s: Record<string, unknown>) => ({
-    mode: s["mode"] === "up" ? ("up" as const) : s["mode"] === "in" ? ("in" as const) : undefined,
-  }),
+  validateSearch: (s: Record<string, unknown>): { mode?: "up" | "in" | "reset"; error?: string } => {
+    const search: { mode?: "up" | "in" | "reset"; error?: string } = {};
+    if (s["mode"] === "up" || s["mode"] === "in" || s["mode"] === "reset") search.mode = s["mode"];
+    if (typeof s["error"] === "string") search.error = s["error"];
+    return search;
+  },
   head: () => ({
     meta: [
       { title: "Sign in | VAYAM Designers Gallery" },
@@ -39,7 +42,7 @@ export const Route = createFileRoute("/auth")({
 
 /** Posts to the auth API and returns the error message, or null on success. */
 async function post(
-  action: "signin" | "signup",
+  action: "signin" | "signup" | "reset-password",
   body: Record<string, string>,
 ): Promise<{ error: string | null; fields?: FieldErrors; status?: number }> {
   try {
@@ -70,14 +73,14 @@ async function post(
 function AuthPage() {
   const { user, loading, refresh } = useSession();
   const navigate = useNavigate();
-  const { mode: asked } = Route.useSearch();
+  const { mode: asked, error: authError } = Route.useSearch();
 
   // Somebody arriving from "Get started" has almost never made an account, and
   // opening on a sign-in form is how people ended up typing a password for an
   // account that did not exist and being told it was wrong. So a new device
   // opens on creating an account and a device that has signed in before opens
   // on signing in. Whatever the link asked for wins over both.
-  const [mode, setModeState] = useState<"in" | "up">(asked ?? "up");
+  const [mode, setModeState] = useState<"in" | "up" | "reset">(asked ?? "up");
   const [noMatch, setNoMatch] = useState(false);
 
   useEffect(() => {
@@ -85,7 +88,19 @@ function AuthPage() {
     else if (isKnownDevice()) setModeState("in");
   }, [asked]);
 
-  const setMode = (next: "in" | "up") => {
+  useEffect(() => {
+    if (!authError) return;
+    const message =
+      authError === "google-config"
+        ? "Google sign-in is not configured yet. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."
+        : authError === "google-cancelled"
+          ? "Google sign-in was cancelled."
+          : "Google sign-in could not be completed. Please try again.";
+    toast.error(message);
+    navigate({ to: "/auth", search: { mode }, replace: true });
+  }, [authError, mode, navigate]);
+
+  const setMode = (next: "in" | "up" | "reset") => {
     setModeState(next);
     setNoMatch(false);
     navigate({ to: "/auth", search: { mode: next }, replace: true });
@@ -111,12 +126,30 @@ function AuthPage() {
       const found = validateSignUp({ fullName, phone, email, password });
       setErrors(found);
       if (Object.keys(found).length > 0) return;
+    } else if (mode === "reset") {
+      const found: FieldErrors = {};
+      const phoneDigits = normalisePhone(phone);
+      if (!email.trim()) found.email = "Enter your email";
+      if (!phoneDigits) found.phone = "Enter your mobile number";
+      else if (phoneDigits.length !== 10) found.phone = "A mobile number is 10 digits";
+      if (password.length < 8) found.password = "Use at least 8 characters";
+      else if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) {
+        found.password = "Include at least one letter and one number";
+      }
+      setErrors(found);
+      if (Object.keys(found).length > 0) return;
     }
 
     setBusy(true);
     const result =
       mode === "in"
         ? await post("signin", { email: email.trim(), password })
+        : mode === "reset"
+          ? await post("reset-password", {
+              email: email.trim(),
+              password,
+              phone: normalisePhone(phone),
+            })
         : await post("signup", {
             email: email.trim(),
             password,
@@ -132,6 +165,12 @@ function AuthPage() {
       // than a toast that repeats only the first half.
       if (mode === "in" && result.status === 401) setNoMatch(true);
       else toast.error(result.error);
+      return;
+    }
+    if (mode === "reset") {
+      toast.success("Password reset. Sign in with your new password.");
+      setPassword("");
+      setMode("in");
       return;
     }
     rememberDevice();
@@ -159,30 +198,34 @@ function AuthPage() {
         <div className="mb-8 flex flex-col items-center text-center">
           <Aperture className="mb-4 size-8" strokeWidth={1.4} />
           <h1 className="text-2xl font-semibold tracking-[-0.03em]">
-            {mode === "in" ? "Welcome back" : "Create your account"}
+            {mode === "in" ? "Welcome back" : mode === "reset" ? "Reset password" : "Create your account"}
           </h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Your photos are matched to you and shared with nobody else.
+            {mode === "reset"
+              ? "Use the mobile number registered on your account."
+              : "Your photos are matched to you and shared with nobody else."}
           </p>
         </div>
         <form onSubmit={submitMember} className="space-y-3" noValidate>
-          {mode === "up" && (
+          {(mode === "up" || mode === "reset") && (
             <>
-              <div>
-                <input
-                  className={input}
-                  type="text"
-                  placeholder="Full name"
-                  autoComplete="name"
-                  value={fullName}
-                  aria-invalid={!!errors.fullName}
-                  onChange={(e) => {
-                    setFullName(e.target.value);
-                    clearError("fullName");
-                  }}
-                />
-                <FieldError message={errors.fullName} />
-              </div>
+              {mode === "up" && (
+                <div>
+                  <input
+                    className={input}
+                    type="text"
+                    placeholder="Full name"
+                    autoComplete="name"
+                    value={fullName}
+                    aria-invalid={!!errors.fullName}
+                    onChange={(e) => {
+                      setFullName(e.target.value);
+                      clearError("fullName");
+                    }}
+                  />
+                  <FieldError message={errors.fullName} />
+                </div>
+              )}
               <div>
                 <input
                   className={input}
@@ -222,7 +265,7 @@ function AuthPage() {
             <input
               className={input}
               type="password"
-              placeholder="Password"
+              placeholder={mode === "reset" ? "New password" : "Password"}
               autoComplete={mode === "in" ? "current-password" : "new-password"}
               required
               value={password}
@@ -236,9 +279,43 @@ function AuthPage() {
             <FieldError message={errors.password} />
           </div>
           <GlassButton type="submit" full size="lg" loading={busy} className="mt-2">
-            {mode === "in" ? "Sign in" : "Create account"}
+            {mode === "in" ? "Sign in" : mode === "reset" ? "Reset password" : "Create account"}
           </GlassButton>
         </form>
+
+        {mode === "in" && (
+          <button
+            type="button"
+            onClick={() => {
+              setMode("reset");
+              setErrors({});
+              setNoMatch(false);
+            }}
+            className="mt-4 w-full rounded-full text-center text-sm font-semibold text-foreground underline decoration-2 underline-offset-4 transition hover:decoration-foreground/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Forgot password?
+          </button>
+        )}
+
+        {mode !== "reset" && (
+          <>
+            <div className="my-5 flex items-center gap-3 text-xs font-medium uppercase text-muted-foreground">
+              <span className="h-px flex-1 bg-hairline" />
+              <span>or</span>
+              <span className="h-px flex-1 bg-hairline" />
+            </div>
+
+            <a
+              href="/api/auth/google"
+              className="press inline-flex h-14 w-full select-none items-center justify-center gap-3 whitespace-nowrap rounded-full border border-hairline bg-background/70 px-7 text-[0.98rem] font-medium tracking-[-0.01em] text-foreground transition hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span className="grid size-5 place-items-center rounded-full bg-white text-sm font-semibold text-[#4285f4]">
+                G
+              </span>
+              Continue with Google
+            </a>
+          </>
+        )}
 
         {noMatch && mode === "in" && (
           <div
@@ -260,7 +337,7 @@ function AuthPage() {
         )}
 
         <p className="mt-6 text-center text-sm text-muted-foreground">
-          {mode === "in" ? "New here? " : "Already have an account? "}
+          {mode === "in" ? "New here? " : mode === "reset" ? "Remembered it? " : "Already have an account? "}
           <button
             type="button"
             onClick={() => {

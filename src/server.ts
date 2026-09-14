@@ -3,7 +3,7 @@ import "./lib/error-capture";
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
 import { handleMediaRequest, purgeExpired, type MediaEnv } from "./lib/media.server";
-import { handleApiRequest } from "./lib/api.server";
+import { handleApiRequest, handleGoogleRedirectCallback } from "./lib/api.server";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -58,6 +58,11 @@ export default {
       // Collections, photos, face profiles and scanning, all from R2.
       const api = await handleApiRequest(request, env as MediaEnv);
       if (api) return api;
+
+      // Some Google OAuth clients register the bare local origin as the
+      // redirect URI. Catch only that exact callback shape before SSR.
+      const googleRootCallback = await handleGoogleRedirectCallback(request, env as MediaEnv);
+      if (googleRootCallback) return googleRootCallback;
 
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);

@@ -11,15 +11,20 @@
 
 import {
   createMember,
+  createGoogleMember,
   getMemberById,
   getMemberByEmail,
+  getMemberByGoogleSub,
+  linkGoogleMember,
   authenticate,
   ensureRole,
   toPublicMember,
   memberKey,
   emailIndexKey,
+  googleIndexKey,
 } from "../src/lib/auth/members.server.ts";
 import { emailKey } from "../src/lib/auth/password.ts";
+import { handleApiRequest } from "../src/lib/api.server.ts";
 
 let failures = 0;
 const check = (name: string, pass: boolean, detail = "") => {
@@ -178,6 +183,76 @@ console.log("\n=== 7. what may reach a browser ===");
   check("no face embeddings", !("references" in pub) && !serialised.includes("0.1"));
   check("identity kept", pub.id === r.member.id && pub.email === "public@gmail.com");
   check("contact details kept", pub.fullName === "Gagan Sharma" && pub.phone === "9876543210");
+}
+
+console.log("\n=== 8. Google accounts ===");
+{
+  const b = mockR2();
+  const r = await createGoogleMember(b as never, {
+    email: "GoogleUser@Gmail.com",
+    fullName: "Google User",
+    googleSub: "google-sub-1",
+  });
+  check("Google account succeeds", r.ok, r.ok ? "" : r.error);
+  if (!r.ok) throw new Error("cannot continue");
+
+  const googleIndex = googleIndexKey(await emailKey("google:google-sub-1"));
+  check("email stored folded", r.member.email === "googleuser@gmail.com", r.member.email);
+  check("marked as Google auth", r.member.authProvider === "google");
+  check("password sign-in does not work", (await authenticate(b as never, "googleuser@gmail.com", "anything")) === null);
+  check("Google index written", b.store.get(googleIndex) === r.member.id);
+  check("Google lookup finds member", (await getMemberByGoogleSub(b as never, "google-sub-1"))?.id === r.member.id);
+
+  const pub = toPublicMember(r.member);
+  check("Google subject stays private", !("googleSub" in pub) && !JSON.stringify(pub).includes("google-sub-1"));
+}
+
+console.log("\n=== 9. linking Google to an existing password account ===");
+{
+  const b = mockR2();
+  const created = await createMember(b as never, { ...base, email: "linked@gmail.com" });
+  if (!created.ok) throw new Error("setup failed");
+
+  const linked = await linkGoogleMember(b as never, created.member, "google-sub-2");
+  check("link succeeds", linked?.id === created.member.id);
+  check("keeps password provider", linked?.authProvider === "password");
+  check("password still signs in", (await authenticate(b as never, "linked@gmail.com", base.password))?.id === created.member.id);
+  check("Google lookup reaches same account", (await getMemberByGoogleSub(b as never, "google-sub-2"))?.id === created.member.id);
+
+  const other = await createMember(b as never, { ...base, email: "other-linked@gmail.com" });
+  if (!other.ok) throw new Error("setup failed");
+  check("same Google account cannot link elsewhere",
+    (await linkGoogleMember(b as never, other.member, "google-sub-2")) === null);
+}
+
+console.log("\n=== 10. resetting a forgotten password ===");
+{
+  const b = mockR2();
+  const created = await createMember(b as never, { ...base, email: "reset@gmail.com" });
+  if (!created.ok) throw new Error("setup failed");
+  const env = { PHOTOS: b as never, SESSION_SECRET: "test-secret" };
+
+  const wrongPhone = await handleApiRequest(
+    new Request("http://local.test/api/auth/reset-password", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "reset@gmail.com", phone: "9999999999", password: "newpass123" }),
+    }),
+    env as never,
+  );
+  check("wrong phone rejected", wrongPhone?.status === 401, String(wrongPhone?.status));
+
+  const reset = await handleApiRequest(
+    new Request("http://local.test/api/auth/reset-password", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "RESET@gmail.com", phone: "98765 43210", password: "newpass123" }),
+    }),
+    env as never,
+  );
+  check("reset accepted", reset?.status === 200, String(reset?.status));
+  check("old password no longer works", (await authenticate(b as never, "reset@gmail.com", base.password)) === null);
+  check("new password works", (await authenticate(b as never, "reset@gmail.com", "newpass123"))?.id === created.member.id);
 }
 
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : failures + " CHECK(S) FAILED"}`);

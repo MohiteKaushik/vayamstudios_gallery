@@ -31,8 +31,13 @@ export type MemberRecord = {
   phone: string;
   role: "admin" | "member";
   onboarded: boolean;
-  /** Self-describing, so the cost can be raised later. Never leaves the server. */
+  /**
+   * Self-describing password hash for password accounts. Google-only accounts
+   * carry an oauth sentinel here, which never verifies as a password hash.
+   */
   passwordHash: string;
+  authProvider?: "password" | "google";
+  googleSub?: string;
   /** One or more face embeddings. Grows on its own as scans confirm new angles. */
   references: number[][];
   referenceImageKey: string | null;
@@ -40,16 +45,17 @@ export type MemberRecord = {
   lastSignInAt: number | null;
 };
 
-/** Everything except the password hash. This is the only shape that may reach a browser. */
-export type PublicMember = Omit<MemberRecord, "passwordHash" | "references">;
+/** Everything except private auth data. This is the only shape that may reach a browser. */
+export type PublicMember = Omit<MemberRecord, "passwordHash" | "references" | "googleSub">;
 
 export function toPublicMember(m: MemberRecord): PublicMember {
-  const { passwordHash: _hash, references: _refs, ...rest } = m;
+  const { passwordHash: _hash, references: _refs, googleSub: _googleSub, ...rest } = m;
   return rest;
 }
 
 export const memberKey = (id: string) => `meta/member/${id}`;
 export const emailIndexKey = (digest: string) => `meta/email/${digest}`;
+export const googleIndexKey = (digest: string) => `meta/google/${digest}`;
 
 async function readJson<T>(bucket: R2Bucket, key: string): Promise<T | null> {
   const obj = await bucket.get(key);
@@ -67,6 +73,12 @@ export type SignUpInput = {
   fullName: string;
   phone: string;
   role?: "admin" | "member";
+};
+
+export type GoogleSignInInput = {
+  email: string;
+  fullName: string;
+  googleSub: string;
 };
 
 export type SignUpResult =
@@ -117,6 +129,7 @@ export async function createMember(
     role: input.role ?? "member",
     onboarded: false,
     passwordHash: await hashPassword(input.password),
+    authProvider: "password",
     references: [],
     referenceImageKey: null,
     createdAt: Date.now(),
@@ -147,6 +160,129 @@ export async function getMemberByEmail(
   if (!object) return null;
   const id = (await object.text()).trim();
   return id ? getMemberById(bucket, id) : null;
+}
+
+async function googleKey(sub: string): Promise<string> {
+  return googleIndexKey(await emailKey(`google:${sub}`));
+}
+
+async function deleteClaimIfOwned(bucket: R2Bucket, key: string, id: string): Promise<void> {
+  const claimed = await bucket.get(key).catch(() => null);
+  if (claimed && (await claimed.text()).trim() === id) {
+    await bucket.delete(key).catch(() => undefined);
+  }
+}
+
+export async function getMemberByGoogleSub(
+  bucket: R2Bucket,
+  googleSub: string,
+): Promise<MemberRecord | null> {
+  const object = await bucket.get(await googleKey(googleSub));
+  if (!object) return null;
+  const id = (await object.text()).trim();
+  return id ? getMemberById(bucket, id) : null;
+}
+
+export async function linkGoogleMember(
+  bucket: R2Bucket,
+  member: MemberRecord,
+  googleSub: string,
+): Promise<MemberRecord | null> {
+  const indexKey = await googleKey(googleSub);
+  const existing = await bucket.get(indexKey);
+  const existingId = existing ? (await existing.text()).trim() : null;
+  if (existingId && existingId !== member.id) return null;
+
+  if (!existingId) {
+    try {
+      await bucket.put(indexKey, member.id, {
+        httpMetadata: { contentType: "text/plain", cacheControl: "no-store" },
+        onlyIf: { etagDoesNotMatch: "*" },
+      });
+    } catch {
+      const raced = await bucket.get(indexKey);
+      const racedId = raced ? (await raced.text()).trim() : null;
+      if (racedId !== member.id) return null;
+    }
+  }
+
+  const updated: MemberRecord = {
+    ...member,
+    authProvider: member.authProvider === "password" ? "password" : "google",
+    googleSub,
+    lastSignInAt: Date.now(),
+  };
+  await putMember(bucket, updated);
+  return updated;
+}
+
+export async function createGoogleMember(
+  bucket: R2Bucket,
+  input: GoogleSignInInput,
+): Promise<SignUpResult> {
+  const email = normaliseEmail(input.email);
+  const digest = await emailKey(email);
+  const indexKey = emailIndexKey(digest);
+
+  if (await bucket.head(indexKey)) return { ok: false, error: "email-taken" };
+
+  const id = crypto.randomUUID();
+  const googleIndex = await googleKey(input.googleSub);
+  try {
+    await bucket.put(indexKey, id, {
+      httpMetadata: { contentType: "text/plain", cacheControl: "no-store" },
+      onlyIf: { etagDoesNotMatch: "*" },
+    });
+    await bucket.put(googleIndex, id, {
+      httpMetadata: { contentType: "text/plain", cacheControl: "no-store" },
+      onlyIf: { etagDoesNotMatch: "*" },
+    });
+  } catch {
+    await deleteClaimIfOwned(bucket, indexKey, id);
+    await deleteClaimIfOwned(bucket, googleIndex, id);
+    return { ok: false, error: "email-taken" };
+  }
+
+  const [claimedEmail, claimedGoogle] = await Promise.all([
+    bucket.get(indexKey),
+    bucket.get(googleIndex),
+  ]);
+  if (
+    (claimedEmail ? (await claimedEmail.text()).trim() : null) !== id ||
+    (claimedGoogle ? (await claimedGoogle.text()).trim() : null) !== id
+  ) {
+    await deleteClaimIfOwned(bucket, indexKey, id);
+    await deleteClaimIfOwned(bucket, googleIndex, id);
+    return { ok: false, error: "email-taken" };
+  }
+
+  const member: MemberRecord = {
+    id,
+    email,
+    fullName: input.fullName.trim() || email.split("@")[0] || "Google member",
+    phone: "",
+    role: "member",
+    onboarded: false,
+    passwordHash: `oauth-google$${input.googleSub}`,
+    authProvider: "google",
+    googleSub: input.googleSub,
+    references: [],
+    referenceImageKey: null,
+    createdAt: Date.now(),
+    lastSignInAt: Date.now(),
+  };
+
+  try {
+    await bucket.put(memberKey(id), JSON.stringify(member), {
+      httpMetadata: { contentType: "application/json", cacheControl: "no-store" },
+    });
+  } catch {
+    await deleteClaimIfOwned(bucket, indexKey, id);
+    await deleteClaimIfOwned(bucket, googleIndex, id);
+    return { ok: false, error: "storage" };
+  }
+
+  return { ok: true, member };
 }
 
 export async function putMember(bucket: R2Bucket, member: MemberRecord): Promise<void> {

@@ -176,9 +176,9 @@ export const api = {
       body: JSON.stringify({ name, description }),
     }),
 
-  listPhotos: (collectionId: string, cursor?: string) =>
+  listPhotos: (collectionId: string, cursor?: string, limit = 40) =>
     call<{ photos: Photo[]; cursor?: string }>(
-      `/api/collections/${collectionId}/photos${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+      `/api/collections/${collectionId}/photos?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
     ),
 
   /** Every photo in a collection, following the pages. */

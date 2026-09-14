@@ -4,11 +4,18 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+const useRemoteBindings =
+  process.env["CLOUDFLARE_REMOTE_BINDINGS"] === "true" ||
+  !!process.env["CLOUDFLARE_API_TOKEN"];
+
 // Plugin order matters: the Cloudflare plugin must come first so the SSR
 // environment is the workerd runtime rather than Node.
 export default defineConfig({
   plugins: [
-    cloudflare({ viteEnvironment: { name: "ssr" } }),
+    cloudflare({
+      viteEnvironment: { name: "ssr" },
+      remoteBindings: useRemoteBindings,
+    }),
     tailwindcss(),
     tanstackStart({
       // Route the bundled server entry through src/server.ts (our SSR error wrapper).
