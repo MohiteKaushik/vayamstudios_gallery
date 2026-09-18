@@ -1,15 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
-import { Download, ImagePlus, X } from "lucide-react";
+import { Download, ImagePlus, UserRound, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { WaitingPanel } from "./WaitingPanel";
 import { GlassButton } from "./ui-kit";
 import { api, ApiError, type WaitingRow } from "@/lib/api";
 import { choosePhotoDirectory, downloadPhotos } from "@/lib/photo-download";
+import { waitingSelection } from "@/lib/waiting-selection";
 
 export function AdminPhotoTools() {
   const collections = useQuery({ queryKey: ["export-collections"], queryFn: api.listCollections });
   const [collectionId, setCollectionId] = useState<string | null>(null);
-  const [member, setMember] = useState<{ userId: string; fullName: string } | null>(null);
+  const [member, setMember] = useState<ReturnType<typeof waitingSelection> | null>(null);
   const [name, setName] = useState("");
   const [references, setReferences] = useState<number[][] | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -33,7 +34,7 @@ export function AdminPhotoTools() {
   useEffect(() => () => { if (archive) URL.revokeObjectURL(archive.url); }, [archive]);
 
   async function pick(file: File | undefined) {
-    if (!file || controller.current) return;
+    if (!file || controller.current || member) return;
     setArchive(null);
     setReferences(null);
     setFile(null);
@@ -67,8 +68,7 @@ export function AdminPhotoTools() {
   async function run(row?: WaitingRow, zipOnly = false) {
     if (controller.current) return;
     const cid = row?.collectionId || selectedEvent;
-    const person = row ? { userId: row.userId, fullName: row.fullName || row.email } : member;
-    if (!cid || (!person && !references)) return;
+    const person = row ? waitingSelection(row) : member;
     if (row) {
       setMember(person);
       setName(person!.fullName);
@@ -76,6 +76,7 @@ export function AdminPhotoTools() {
       setReferences(null);
       setFile(null);
     }
+    if (!cid || (!person && !references)) return;
     const abort = new AbortController();
     controller.current = abort;
     setBusy(true);
@@ -97,11 +98,11 @@ export function AdminPhotoTools() {
       const directory = zipOnly ? null : await choosePhotoDirectory();
       abort.signal.throwIfAborted();
       if (row) panel.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-      setMessage(`Finding photos for ${row?.fullName || name || "this person"}...`);
+      setMessage(`Finding photos for ${person?.fullName || name || "this person"}...`);
       let result;
       try {
         result = await api.adminPhotoSearch(
-          person && (row || !references) ? { collectionId: cid, userId: person.userId } : { collectionId: cid, references: references! },
+          person ? { collectionId: cid, userId: person.userId } : { collectionId: cid, references: references! },
           abort.signal,
         );
       } catch (e) {
@@ -109,22 +110,27 @@ export function AdminPhotoTools() {
         // Old or missing embeddings can be rebuilt locally from the member's
         // saved crop. Do not replace their profile or upload the image again.
         setMessage(`Preparing ${person.fullName}'s saved reference...`);
-        const response = await fetch(`/media/face/${person.userId}`, { credentials: "same-origin", signal: abort.signal });
+        const response = await fetch(person.referenceUrl, { credentials: "same-origin", signal: abort.signal });
         if (!response.ok) throw new Error(response.status === 404
-          ? "This member has no saved reference photo. Choose a person photo below."
+          ? "This member has no saved face profile or reference image. They need to add their reference in Settings."
           : "Could not load the saved reference. Please retry.");
         const blob = await response.blob();
         const { referenceFromPhoto } = await import("@/lib/reference-photo");
-        const savedRefs = await referenceFromPhoto(new File([blob], "saved-reference.jpg", { type: blob.type }));
+        let savedRefs: number[][];
+        try {
+          savedRefs = await referenceFromPhoto(new File([blob], "saved-reference.jpg", { type: blob.type }));
+        } catch (error) {
+          abort.signal.throwIfAborted();
+          throw new Error("The saved reference could not be processed. Retry, or ask the member to update their reference in Settings.", { cause: error });
+        }
         abort.signal.throwIfAborted();
-        setReferences(savedRefs);
         result = await api.adminPhotoSearch({ collectionId: cid, references: savedRefs }, abort.signal);
       }
       if (!result.hits.length) {
         setMessage("No matching photos found. Nothing was downloaded.");
         return;
       }
-      const label = `${row?.fullName || name || "Person"}-${result.collectionName}`;
+      const label = `${person?.fullName || name || "Person"}-${result.collectionName}`;
       setMessage(`Downloading 0 of ${result.hits.length} photos...`);
       const download = await downloadPhotos(result.hits, directory, label, abort.signal, (count, total) => {
         saved = count;
@@ -142,7 +148,7 @@ export function AdminPhotoTools() {
         link.remove();
       }
       setMessage(download.blob
-        ? `ZIP ready: ${download.saved} matched photos for ${row?.fullName || name || "this person"}.`
+        ? `ZIP ready: ${download.saved} matched photos for ${person?.fullName || name || "this person"}.`
         : `Saved ${download.saved} photos in ${download.folder}.`);
       const warnings = [
         download.failed.length ? `${download.failed.length} photos could not be saved: ${download.failed.slice(0, 3).join(", ")}. Retry to download them.` : "",
@@ -172,7 +178,7 @@ export function AdminPhotoTools() {
     <>
       <WaitingPanel onDownloadPhotos={(row) => void run(row)} onReferencePhoto={(row) => void run(row)} downloadBusy={busy} />
       <section ref={panel} className="mt-10 border-t border-hairline pt-8" aria-labelledby="photo-export-title">
-        <h2 id="photo-export-title" className="text-sm font-medium uppercase text-muted-foreground">Download by reference photo</h2>
+        <h2 id="photo-export-title" className="text-sm font-medium uppercase text-muted-foreground">{member ? "Download member photos" : "Download by reference photo"}</h2>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <label className="min-w-0 text-sm">
             Event
@@ -186,25 +192,25 @@ export function AdminPhotoTools() {
             </select>
           </label>
           <label className="min-w-0 text-sm">
-            Person name (optional)
-            <input value={name} onChange={(e) => setName(e.target.value)} disabled={busy} maxLength={80}
+            {member ? "Member name" : "Person name (optional)"}
+            <input value={member?.fullName ?? name} onChange={(e) => setName(e.target.value)} disabled={busy} readOnly={!!member} maxLength={80}
               className="mt-2 block w-full min-w-0 rounded-lg border border-hairline bg-secondary p-3" />
           </label>
         </div>
         {member && <div className="mt-4 flex flex-wrap items-center gap-3 text-sm">
-          <span className="min-w-0 break-words">Member reference: {member.fullName}</span>
+          <SavedMemberReference key={member.userId} member={member} />
           <GlassButton variant="quiet" size="sm" disabled={busy} icon={<X className="size-4" />}
-            onClick={() => { setMember(null); setReferences(null); setFile(null); setArchive(null); setMessage(""); setError(""); }}>
+            onClick={() => { setMember(null); setName(""); setReferences(null); setFile(null); setArchive(null); setMessage(""); setError(""); }}>
             Clear member
           </GlassButton>
         </div>}
         {collections.isError && <p role="alert" className="mt-3 text-sm text-destructive">Could not load events. <button className="underline" onClick={() => void collections.refetch()}>Retry</button></p>}
-        <input ref={input} aria-label="Person reference photo" type="file" accept="image/*" className="hidden"
-          onChange={(e) => { void pick(e.target.files?.[0]); e.target.value = ""; }} />
+        {!member && <input ref={input} aria-label="Person reference photo" type="file" accept="image/*" className="hidden"
+          onChange={(e) => { void pick(e.target.files?.[0]); e.target.value = ""; }} />}
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          {preview && <img src={preview} alt="Selected reference" className="size-16 rounded-lg object-cover" />}
-          <GlassButton variant="quiet" icon={<ImagePlus className="size-4" />} disabled={busy}
-            onClick={() => input.current?.click()}>{file ? "Replace reference" : "Choose person photo"}</GlassButton>
+          {!member && preview && <img src={preview} alt="Selected reference" className="size-16 rounded-lg object-cover" />}
+          {!member && <GlassButton variant="quiet" icon={<ImagePlus className="size-4" />} disabled={busy}
+            onClick={() => input.current?.click()}>{file ? "Replace reference" : "Choose person photo"}</GlassButton>}
           <GlassButton icon={<Download className="size-4" />} disabled={busy || (!references && !member) || !selectedEvent}
             onClick={() => void run()}>Download photos</GlassButton>
           <GlassButton variant="quiet" icon={<Download className="size-4" />} disabled={busy || (!references && !member) || !selectedEvent}
@@ -218,5 +224,22 @@ export function AdminPhotoTools() {
         </a>}
       </section>
     </>
+  );
+}
+
+function SavedMemberReference({ member }: { member: ReturnType<typeof waitingSelection> }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-3">
+      <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-secondary">
+        {failed ? <UserRound className="size-6 text-muted-foreground" /> :
+          <img src={member.referenceUrl} alt={`Saved reference for ${member.fullName}`}
+            className="size-full object-cover" onError={() => setFailed(true)} />}
+      </div>
+      <div className="min-w-0">
+        <p className="break-words font-medium">{member.fullName}</p>
+        <p className="text-xs text-muted-foreground">{failed ? "Member selected; photo preview unavailable" : "Saved member reference"}</p>
+      </div>
+    </div>
   );
 }

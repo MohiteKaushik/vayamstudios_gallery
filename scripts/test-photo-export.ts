@@ -5,6 +5,7 @@ import { createSessionToken, SESSION_COOKIE } from "../src/lib/auth/session.ts";
 import { downloadPhotos, safeFileName, type Directory } from "../src/lib/photo-download.ts";
 import type { MediaEnv } from "../src/lib/media.server.ts";
 import { filterWaitingMembers } from "../src/lib/waiting-search.ts";
+import { waitingSelection } from "../src/lib/waiting-selection.ts";
 
 const people = [{ fullName: "Jyothi Rao", email: "jyothi@example.test" }, { fullName: "Sai Sam", email: "sai@example.test" }];
 assert.deepEqual(filterWaitingMembers(people, "  JYOTHI  "), [people[0]]);
@@ -12,6 +13,10 @@ assert.deepEqual(filterWaitingMembers(people, "sam sai"), [people[1]]);
 assert.deepEqual(filterWaitingMembers(people, "jyothi@"), [people[0]]);
 assert.deepEqual(filterWaitingMembers(people, "nobody"), []);
 assert.deepEqual(filterWaitingMembers(people, "  "), people);
+const selected = waitingSelection({ userId: "member-a", fullName: "M Prabhakar", email: "member@example.test" });
+assert.deepEqual(selected, { userId: "member-a", fullName: "M Prabhakar", referenceUrl: "/media/face/member-a" });
+assert.equal(waitingSelection({ userId: "member-b", fullName: "", email: "other@example.test" }).fullName, "other@example.test");
+assert.notEqual(selected.referenceUrl, waitingSelection({ userId: "member-b", fullName: "Other", email: "" }).referenceUrl);
 
 const cid = crypto.randomUUID(), admin = crypto.randomUUID(), member = crypto.randomUUID();
 const pid = crypto.randomUUID(), missing = crypto.randomUUID();
