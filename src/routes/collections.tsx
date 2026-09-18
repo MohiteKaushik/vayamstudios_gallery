@@ -6,6 +6,8 @@ import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { ScanProgress } from "@/components/ScanProgress";
 import { PhotoGrid, PhotoGridSkeleton, type GridPhoto } from "@/components/PhotoGrid";
+import { PagedPhotoGrid } from "@/components/PagedPhotoGrid";
+import { stablePhotoPages } from "@/lib/photo-pages";
 import { PhotoViewer } from "@/components/PhotoViewer";
 import { FaceEnrolSheet } from "@/components/FaceEnrolSheet";
 import { EmptyState, GlassButton, GlassCard, Shimmer, useConfirm } from "@/components/ui-kit";
@@ -236,27 +238,21 @@ function useInfinitePhotos(collectionId: string) {
   });
 }
 
-function flattenPhotoPages(
-  data: InfiniteData<{ photos: Photo[]; cursor?: string }, unknown> | undefined,
-): Photo[] {
-  return (data?.pages.flatMap((page) => page.photos) ?? []).sort(
-    (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
-  );
-}
-
 function PhotoPageLoader({
   hasNextPage,
   isFetchingNextPage,
+  isFetchNextPageError,
   fetchNextPage,
 }: {
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
+  isFetchNextPageError: boolean;
   fetchNextPage: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!hasNextPage) return;
+    if (!hasNextPage || isFetchNextPageError) return;
     const node = ref.current;
     if (!node) return;
     const observer = new IntersectionObserver(
@@ -269,7 +265,7 @@ function PhotoPageLoader({
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage, isFetchNextPageError]);
 
   if (!hasNextPage && !isFetchingNextPage) return null;
   return (
@@ -279,6 +275,10 @@ function PhotoPageLoader({
           <Loader2 className="size-4 animate-spin" />
           Loading more photos
         </span>
+      ) : isFetchNextPageError ? (
+        <GlassButton variant="quiet" icon={<RefreshCw className="size-4" />} onClick={fetchNextPage}>
+          Retry loading more photos
+        </GlassButton>
       ) : (
         <span className="h-6" aria-hidden />
       )}
@@ -448,9 +448,17 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
     }
   }
 
-  const list = flattenPhotoPages(photos.data);
+  const photoPages = stablePhotoPages(photos.data?.pages);
+  const list = photoPages.flatMap((page) => page.photos);
   const grid: GridPhoto[] = list.map(toGridPhoto);
-  const batches = groupIntoBatches(list);
+  // Keep upload groups within their fetched page so appends cannot regroup old tiles.
+  const batches = photoPages.flatMap((page) =>
+    groupIntoBatches(page.photos).map((batch) => ({
+      ...batch,
+      key: `${page.key}:${batch.key}`,
+      offset: page.offset + batch.offset,
+    })),
+  );
 
   const toggleOne = (id: string) =>
     setSelected((prev) => {
@@ -483,7 +491,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
               : photos.isError
                 ? "Photos could not be loaded"
                 : photos.hasNextPage
-                  ? `${formatCount(list.length, "photo")} loaded`
+                  ? "Event photos"
                   : formatCount(list.length, "photo")}
           </p>
         </div>
@@ -624,7 +632,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
 
       {photos.isLoading ? (
         <PhotoGridSkeleton />
-      ) : photos.isError ? (
+      ) : photos.isError && !list.length ? (
         // A failed load used to fall through to "No photos yet", which reads as
         // an event that has lost everything. Say what actually happened.
         <EmptyState
@@ -683,6 +691,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
           <PhotoPageLoader
             hasNextPage={photos.hasNextPage}
             isFetchingNextPage={photos.isFetchingNextPage}
+            isFetchNextPageError={photos.isFetchNextPageError}
             fetchNextPage={() => void photos.fetchNextPage()}
           />
         </>
@@ -748,7 +757,8 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
   }
 
   const hits: ScanHit[] = results.data?.hits ?? [];
-  const loadedPhotos = flattenPhotoPages(allPhotos.data);
+  const photoPages = stablePhotoPages(allPhotos.data?.pages);
+  const loadedPhotos = photoPages.flatMap((page) => page.photos);
   const everything: GridPhoto[] = loadedPhotos.map(toGridPhoto);
   const grid: GridPhoto[] = view === "mine" ? hits.map(toGridHit) : everything;
   const hasScanned = (results.data?.scannedAt ?? 0) > 0;
@@ -766,7 +776,7 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
               : allPhotos.isLoading
                 ? "Loading photos"
                 : allPhotos.hasNextPage
-                  ? `${formatCount(everything.length, "photo")} loaded`
+                  ? "Photos from this event"
                   : `${formatCount(everything.length, "photo")} from this event`}
           </p>
         </div>
@@ -807,10 +817,14 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
           />
         ) : (
           <>
-            <PhotoGrid photos={everything} onOpen={setOpen} />
+            <PagedPhotoGrid
+              pages={photoPages.map((page) => ({ ...page, photos: page.photos.map(toGridPhoto) }))}
+              onOpen={setOpen}
+            />
             <PhotoPageLoader
               hasNextPage={allPhotos.hasNextPage}
               isFetchingNextPage={allPhotos.isFetchingNextPage}
+              isFetchNextPageError={allPhotos.isFetchNextPageError}
               fetchNextPage={() => void allPhotos.fetchNextPage()}
             />
           </>
