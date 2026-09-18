@@ -396,6 +396,11 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
     return listWaiting(env);
   }
 
+  if (head === "admin" && rest[0] === "photo-search" && request.method === "POST") {
+    if (!isAdmin) return json({ error: "Admins only" }, 403);
+    return adminPhotoSearch(request, env);
+  }
+
   if (head === "bin") {
     if (!isAdmin) return json({ error: "Admins only" }, 403);
     return handleBin(request, env, rest);
@@ -1619,6 +1624,55 @@ async function handleBin(request: Request, env: MediaEnv, rest: string[]): Promi
     if (e instanceof BinError) return json({ error: e.message }, e.status);
     throw e;
   }
+}
+
+/** Read-only admin export search: never changes a profile, cached scan or waiting row. */
+async function adminPhotoSearch(request: Request, env: MediaEnv): Promise<Response> {
+  let body: { collectionId?: unknown; userId?: unknown; references?: unknown };
+  try {
+    body = await request.json();
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error();
+  } catch {
+    return json({ error: "Malformed body" }, 400);
+  }
+  const cid = body.collectionId;
+  if (typeof cid !== "string" || !isSafeId(cid)) return json({ error: "Choose an event" }, 400);
+  const collection = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(cid));
+  if (!collection) return json({ error: "This event is no longer available" }, 404);
+  if ((body.userId !== undefined) === (body.references !== undefined)) {
+    return json({ error: "Supply either a member or a reference photo" }, 400);
+  }
+  let references = body.references;
+  if (body.userId !== undefined) {
+    if (typeof body.userId !== "string" || !isSafeId(body.userId)) return json({ error: "Invalid member" }, 400);
+    const target = await getMemberById(env.PHOTOS, body.userId);
+    if (!target) return json({ error: "This member no longer exists" }, 404);
+    references = target.references;
+  }
+  if (!Array.isArray(references) || references.length < 1 || references.length > 8 ||
+    !references.every((r) => Array.isArray(r) && r.length === DESCRIPTOR_DIM &&
+      r.every((v) => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 1) &&
+      r.some((v) => v !== 0))) {
+    return json({ error: "A current face reference is required. Choose a clear photo of this person.", code: "no-face" }, 400);
+  }
+  if (!env.FACE_INDEX) return json({ error: "The face index is unavailable in this environment", code: "no-index" }, 503);
+  const outcome = await searchCollection(env.FACE_INDEX, {
+    collectionId: cid, references, threshold: MATCH_MAX_DISTANCE,
+  });
+  const candidates = await mapLimit(outcome.matches, READ_CONCURRENCY, async (match) => {
+    const confidence = confidenceFor(match.distance, match.hops);
+    if (confidence < CONFIDENT_THRESHOLD || !isSafeId(match.photoId)) return null;
+    const photo = await readJson<PhotoMeta>(env.PHOTOS, photoMetaKey(cid, match.photoId));
+    if (!photo) return null;
+    return {
+      photoId: match.photoId, confidence, hops: match.hops,
+      fileName: photo.fileName, width: photo.width, height: photo.height,
+      thumbUrl: mediaUrl(cid, match.photoId, "t"), fullUrl: mediaUrl(cid, match.photoId),
+    };
+  });
+  const hits = candidates.filter((hit): hit is NonNullable<typeof hit> => hit !== null);
+  hits.sort((a, b) => b.confidence - a.confidence);
+  return json({ hits, truncated: outcome.truncated, collectionName: collection.name });
 }
 
 /* ---------------------------------- scan ---------------------------------- */

@@ -155,6 +155,12 @@ export type WaitingRow = {
 };
 
 export const api = {
+  adminPhotoSearch: (
+    input: { collectionId: string } & ({ userId: string } | { references: number[][] }),
+    signal?: AbortSignal,
+  ) => call<{ hits: ScanHit[]; truncated: boolean; collectionName: string }>("/api/admin/photo-search", {
+    method: "POST", body: JSON.stringify(input), ...(signal ? { signal } : {}),
+  }),
   unindexedPhotos: (collectionId: string) =>
     call<{ photoIds: string[]; total: number; indexed: number }>(
       `/api/collections/${collectionId}/unindexed`,

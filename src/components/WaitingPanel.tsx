@@ -19,7 +19,11 @@ import { sinceText } from "@/lib/time";
  *
  * A name leaves this list the moment one of their searches succeeds.
  */
-export function WaitingPanel() {
+export function WaitingPanel({ onDownloadPhotos, onReferencePhoto, downloadBusy = false }: {
+  onDownloadPhotos?: (row: WaitingRow) => void;
+  onReferencePhoto?: (row: WaitingRow) => void;
+  downloadBusy?: boolean;
+}) {
   const waiting = useQuery({
     queryKey: ["waiting"],
     queryFn: api.listWaiting,
@@ -58,7 +62,7 @@ export function WaitingPanel() {
         </div>
         {rows.length > 0 && (
           <GlassButton variant="quiet" size="sm" icon={<Download className="size-4" />} onClick={download}>
-            Download
+            Download list (CSV)
           </GlassButton>
         )}
       </div>
@@ -104,6 +108,13 @@ export function WaitingPanel() {
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
+                  {onDownloadPhotos && (
+                    <GlassButton size="sm" variant="quiet" disabled={downloadBusy}
+                      icon={r.hasReference ? <Download className="size-4" /> : <ScanFace className="size-4" />}
+                      onClick={() => r.hasReference ? onDownloadPhotos(r) : onReferencePhoto?.(r)}>
+                      {r.hasReference ? "Download photos" : "Choose reference"}
+                    </GlassButton>
+                  )}
                   <a
                     href={`https://wa.me/91${r.phone.replace(/\D/g, "").slice(-10)}`}
                     target="_blank"
