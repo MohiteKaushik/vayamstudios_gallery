@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import { Clock, Download, MessageCircle, Phone, ScanFace, UserCheck, UserRound } from "lucide-react";
+import { Clock, Download, MessageCircle, Phone, ScanFace, Search, UserCheck, UserRound, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { EmptyState, GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
 import { api, type WaitingRow } from "@/lib/api";
 import { formatPhone } from "@/lib/members";
 import { sinceText } from "@/lib/time";
+import { filterWaitingMembers } from "@/lib/waiting-search";
 
 /**
  * Who is still waiting to be photographed.
@@ -34,17 +35,19 @@ export function WaitingPanel({ onDownloadPhotos, onReferencePhoto, downloadBusy 
   });
 
   const rows = waiting.data ?? [];
+  const [search, setSearch] = useState("");
+  const visibleRows = filterWaitingMembers(rows, search);
 
   function download() {
-    if (!rows.length) return;
-    const blob = new Blob(["﻿" + waitingToCsv(rows)], { type: "text/csv;charset=utf-8" });
+    if (!visibleRows.length) return;
+    const blob = new Blob(["﻿" + waitingToCsv(visibleRows)], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = `vayam-waiting-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    toast.success(`Downloaded ${rows.length} row(s)`);
+    toast.success(`Downloaded ${visibleRows.length} row(s)`);
   }
 
   return (
@@ -61,23 +64,44 @@ export function WaitingPanel({ onDownloadPhotos, onReferencePhoto, downloadBusy 
           </p>
         </div>
         {rows.length > 0 && (
-          <GlassButton variant="quiet" size="sm" icon={<Download className="size-4" />} onClick={download}>
-            Download list (CSV)
+          <GlassButton variant="quiet" size="sm" disabled={!visibleRows.length} icon={<Download className="size-4" />} onClick={download}>
+            {search.trim() ? "Download results (CSV)" : "Download list (CSV)"}
           </GlassButton>
         )}
       </div>
 
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="relative w-full sm:max-w-sm">
+          <Search aria-hidden className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground" />
+          <input type="search" aria-label="Search waiting members" placeholder="Search name or email"
+            value={search} onChange={(e) => setSearch(e.target.value)}
+            className="h-10 w-full rounded-lg border border-hairline bg-secondary pl-10 pr-10 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-search-cancel-button]:appearance-none" />
+          {search && <button type="button" aria-label="Clear member search" title="Clear search"
+            onClick={() => setSearch("")}
+            className="absolute right-1 top-1 flex size-8 items-center justify-center rounded-full text-muted-foreground transition-transform hover:scale-110 hover:text-foreground">
+            <X className="size-4" />
+          </button>}
+        </div>
+        {search.trim() && <span role="status" className="text-xs text-muted-foreground">
+          {visibleRows.length} of {rows.length} members
+        </span>}
+      </div>
+
       {waiting.isLoading ? (
         <Shimmer className="h-24" />
+      ) : waiting.isError && !waiting.data ? (
+        <p role="alert" className="text-sm text-destructive">Could not load waiting members. <button className="underline" onClick={() => void waiting.refetch()}>Retry</button></p>
       ) : rows.length === 0 ? (
         <EmptyState
           icon={<UserCheck className="size-7" strokeWidth={1.5} />}
           title="Nobody is waiting"
           description="This list fills up on its own when someone searches an event and comes up empty."
         />
+      ) : visibleRows.length === 0 ? (
+        <EmptyState icon={<Search className="size-7" strokeWidth={1.5} />} title="No matching members" description="Try another name or email." />
       ) : (
         <ul className="space-y-2">
-          {rows.map((r) => (
+          {visibleRows.map((r) => (
             <li key={`${r.collectionId}:${r.userId}`}>
               <GlassCard className="flex flex-wrap items-center gap-4 px-5 py-4">
                 {/* The face they enrolled with. A name and a number do not let
@@ -112,7 +136,7 @@ export function WaitingPanel({ onDownloadPhotos, onReferencePhoto, downloadBusy 
                     <GlassButton size="sm" variant="quiet" disabled={downloadBusy}
                       icon={r.hasReference ? <Download className="size-4" /> : <ScanFace className="size-4" />}
                       onClick={() => r.hasReference ? onDownloadPhotos(r) : onReferencePhoto?.(r)}>
-                      {r.hasReference ? "Download photos" : "Choose reference"}
+                      Download photos
                     </GlassButton>
                   )}
                   <a

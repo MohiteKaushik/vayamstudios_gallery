@@ -1568,8 +1568,13 @@ async function listWaiting(env: MediaEnv): Promise<Response> {
   const rows = await mapLimit(keys, READ_CONCURRENCY, (k) =>
     readJson<WaitingRecord>(env.PHOTOS, k),
   );
-  const waiting = rows
-    .filter((r): r is WaitingRecord => r !== null)
+  const currentRows = await mapLimit(rows.filter((r): r is WaitingRecord => r !== null), READ_CONCURRENCY, async (row) => {
+    const member = await getMemberById(env.PHOTOS, row.userId);
+    const hasEmbeddings = member?.references?.some((ref) => ref.length === DESCRIPTOR_DIM) ?? false;
+    const hasImage = member ? !!(await env.PHOTOS.head(facePhotoKey(row.userId))) : false;
+    return { ...row, hasReference: hasEmbeddings || hasImage };
+  });
+  const waiting = currentRows
     .sort((a, b) => b.lastAskedAt - a.lastAskedAt);
 
   return json({ waiting });
@@ -1638,7 +1643,7 @@ async function adminPhotoSearch(request: Request, env: MediaEnv): Promise<Respon
   const cid = body.collectionId;
   if (typeof cid !== "string" || !isSafeId(cid)) return json({ error: "Choose an event" }, 400);
   const collection = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(cid));
-  if (!collection) return json({ error: "This event is no longer available" }, 404);
+  if (!collection) return json({ error: "This event is no longer available. Choose a current event.", code: "no-event" }, 404);
   if ((body.userId !== undefined) === (body.references !== undefined)) {
     return json({ error: "Supply either a member or a reference photo" }, 400);
   }

@@ -4,6 +4,14 @@ import { handleApiRequest } from "../src/lib/api.server.ts";
 import { createSessionToken, SESSION_COOKIE } from "../src/lib/auth/session.ts";
 import { downloadPhotos, safeFileName, type Directory } from "../src/lib/photo-download.ts";
 import type { MediaEnv } from "../src/lib/media.server.ts";
+import { filterWaitingMembers } from "../src/lib/waiting-search.ts";
+
+const people = [{ fullName: "Jyothi Rao", email: "jyothi@example.test" }, { fullName: "Sai Sam", email: "sai@example.test" }];
+assert.deepEqual(filterWaitingMembers(people, "  JYOTHI  "), [people[0]]);
+assert.deepEqual(filterWaitingMembers(people, "sam sai"), [people[1]]);
+assert.deepEqual(filterWaitingMembers(people, "jyothi@"), [people[0]]);
+assert.deepEqual(filterWaitingMembers(people, "nobody"), []);
+assert.deepEqual(filterWaitingMembers(people, "  "), people);
 
 const cid = crypto.randomUUID(), admin = crypto.randomUUID(), member = crypto.randomUUID();
 const pid = crypto.randomUUID(), missing = crypto.randomUUID();
@@ -13,6 +21,7 @@ const records = new Map<string, unknown>([
   [`meta/member/${member}`, { id: member, role: "member", references: [reference] }],
   [`meta/collection/${cid}`, { id: cid, name: "Test event" }],
   [`meta/photo/${cid}/${pid}`, { id: pid, fileName: "photo.jpg", width: 800, height: 600 }],
+  [`waiting/${cid}/${member}`, { userId: member, collectionId: cid, hasReference: false, lastAskedAt: 1 }],
 ]);
 let writes = 0;
 const env = {
@@ -20,6 +29,7 @@ const env = {
   PHOTOS: {
     get: async (key: string) => records.has(key) ? { json: async () => records.get(key) } : null,
     head: async (key: string) => records.has(key) ? {} : null,
+    list: async ({ prefix }: { prefix: string }) => ({ objects: [...records.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key })), truncated: false }),
     put: async () => { writes++; }, delete: async () => { writes++; },
   },
   FACE_INDEX: {
@@ -42,6 +52,22 @@ assert.equal((await search({ collectionId: cid, userId: member }, null)).status,
 assert.equal((await search({ collectionId: cid, userId: member }, memberToken)).status, 403);
 assert.equal((await search({ collectionId: "../private", userId: member })).status, 400);
 assert.equal((await search({ collectionId: crypto.randomUUID(), userId: member })).status, 404);
+const stale = await search({ collectionId: crypto.randomUUID(), userId: member });
+assert.equal((await stale.json() as { code: string }).code, "no-event");
+async function waitingStatus() {
+  const response = await handleApiRequest(new Request("https://local.test/api/waiting", {
+    headers: { cookie: `${SESSION_COOKIE}=${token}` },
+  }), env);
+  return (await response!.json() as { waiting: { hasReference: boolean }[] }).waiting[0]!.hasReference;
+}
+assert.equal(await waitingStatus(), true, "Use current embeddings, not the old waiting snapshot");
+const memberRecord = records.get(`meta/member/${member}`) as { references: number[][] };
+memberRecord.references = [];
+assert.equal(await waitingStatus(), false, "Removed reference must not remain available");
+records.set(`meta/face-photo/${member}`, {});
+assert.equal(await waitingStatus(), true, "A saved crop can rebuild the member reference");
+records.delete(`meta/face-photo/${member}`);
+memberRecord.references = [reference];
 assert.equal((await search({ collectionId: cid, userId: admin })).status, 400);
 assert.equal((await search({ collectionId: cid, references: [[1]] })).status, 400);
 assert.equal((await search({ collectionId: cid, references: [Array(512).fill(0)] })).status, 400);
