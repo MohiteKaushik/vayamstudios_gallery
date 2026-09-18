@@ -18,9 +18,9 @@
  */
 
 import { detectFacesThorough } from "./face";
-import { downscale, fileToImage } from "./images";
+import { fileToImage } from "./images";
 import { api } from "./api";
-import { STORE_MAX_EDGE, type BulkProgress } from "./upload";
+import type { BulkProgress } from "./upload";
 
 export type ReanalyseProgress = BulkProgress & {
   /** Photographs whose faces are already in the current model's terms. */
@@ -30,19 +30,16 @@ export type ReanalyseProgress = BulkProgress & {
 /**
  * Reads one photograph again and replaces its face record.
  *
- * The image comes from /media/p, the same route the grid uses, so it is the
- * stored copy rather than the original the photographer handed over. That is
- * the right one: it is what every later scan will be compared against, and it
- * is what the first indexing pass saw.
+ * /media/p returns the stored image: an unchanged original for new uploads,
+ * or a reduced copy for legacy uploads. Face boxes use that image's dimensions.
  */
 async function reanalysePhoto(collectionId: string, photoId: string): Promise<number> {
   const res = await fetch(`/media/p/${collectionId}/${photoId}`, { credentials: "same-origin" });
   if (!res.ok) throw new Error(`Could not read the photo back (${res.status})`);
   const img = await fileToImage(new File([await res.blob()], photoId));
 
-  const stored = downscale(img, STORE_MAX_EDGE);
   const analysis = await detectFacesThorough(img);
-  const scale = stored.canvas.width / analysis.canvas.width;
+  const scale = img.naturalWidth / analysis.canvas.width;
 
   const faces = analysis.faces.map((f) => ({
     descriptor: f.descriptor,

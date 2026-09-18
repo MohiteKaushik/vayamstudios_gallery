@@ -13,8 +13,9 @@ WHAT IT CAN READ
 
 JPEG, PNG, WebP, AVIF, TIFF, BMP and GIF out of the box. HEIC, which is what an
 iPhone writes, if pillow-heif is installed. Raw files from every common camera,
-ARW and CR3 and NEF and the rest, if rawpy is installed. Everything is converted
-to JPEG before it is uploaded, so the gallery only ever sees one format.
+ARW and CR3 and NEF and the rest, if rawpy is installed. Uploads preserve JPEG,
+PNG, WebP and AVIF files byte-for-byte. Other formats must be exported by the
+photographer to one of those formats first; they are never silently converted.
 
 A camera set to raw plus JPEG writes two files for one press of the shutter.
 Both are found, and only one is uploaded: the JPEG, because it is the picture
@@ -95,8 +96,7 @@ UPLOADED_FILE = HERE / "uploaded.json"
 
 # What a camera or a phone might drop into the folder.
 #
-# Everything is converted to JPEG before it is uploaded, so this list is about
-# what can be READ, not what the gallery stores. A photographer shooting raw
+# This list is about what can be READ, not what the gallery stores. A photographer shooting raw
 # plus JPEG gets both files for one frame; the pairing below sends one of them.
 RAW_SUFFIXES = {
     ".arw", ".srf", ".sr2",          # Sony
@@ -124,12 +124,11 @@ PLAIN_SUFFIXES = {
 }
 SUFFIXES = RAW_SUFFIXES | HEIF_SUFFIXES | PLAIN_SUFFIXES
 
-# Matches STORE_MAX_EDGE and THUMB_MAX_EDGE in the app. Uploading the camera's
-# full frame would waste the card's worth of bandwidth on a phone hotspot, and
-# the gallery would only shrink it anyway.
-STORE_MAX_EDGE = 2048
+# Only thumbnails are resized. The downloadable file is never re-encoded.
+RAW_PREVIEW_MIN_EDGE = 2048
 THUMB_MAX_EDGE = 512
 JPEG_QUALITY = 86
+ORIGINAL_TYPES = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp", "AVIF": "image/avif"}
 
 # A file still being written by the card reader has a size that keeps changing.
 # Uploading it half-written gives a truncated image nobody notices until later.
@@ -264,8 +263,7 @@ def open_raw(path: Path) -> Image.Image:
     Every raw file carries a JPEG preview, usually at or near full size, which
     the camera produced with its own processing. Pulling that out takes
     milliseconds. Demosaicing the sensor data instead takes a second or more per
-    frame and, for our purposes, looks no better: the gallery shrinks it to 2048
-    pixels and a face detector runs over it.
+    frame. This decoder is used for previews only, never for original uploads.
 
     So the preview is the fast path and a full decode is the fallback, for the
     rare file whose preview is missing or postage-stamp sized.
@@ -288,11 +286,11 @@ def open_raw(path: Path) -> Image.Image:
                 preview = Image.open(BytesIO(thumb.data))
                 # A tiny preview is worse than decoding properly. Anything at
                 # least as wide as we store is plenty.
-                if max(preview.size) >= STORE_MAX_EDGE:
+                if max(preview.size) >= RAW_PREVIEW_MIN_EDGE:
                     return ImageOps.exif_transpose(preview)
             elif thumb.format == rawpy.ThumbFormat.BITMAP:
                 preview = Image.fromarray(thumb.data)
-                if max(preview.size) >= STORE_MAX_EDGE:
+                if max(preview.size) >= RAW_PREVIEW_MIN_EDGE:
                     return preview
 
         # No usable preview: develop the sensor data. Camera white balance,
@@ -343,15 +341,31 @@ def prepare(path: Path, max_edge: int) -> tuple[bytes, int, int]:
     finally:
         img.close()
 
+def prepare_original(path: Path) -> tuple[bytes, int, int, str]:
+    """Read original bytes; decoding is only used to record displayed dimensions."""
+    if path.stat().st_size > 25 * 1024 * 1024:
+        raise ValueError("Original exceeds the 25 MB upload limit; it will not be resized.")
+    if path.suffix.lower() not in {".jpg", ".jpeg", ".jpe", ".png", ".webp", ".avif"}:
+        raise ValueError("Export to JPEG, PNG, WebP or AVIF first. Original uploads are never converted.")
+    with Image.open(path) as image:
+        content_type = ORIGINAL_TYPES.get(image.format)
+        if not content_type:
+            raise ValueError("Original uploads require JPEG, PNG, WebP or AVIF.")
+        width, height = image.size
+        if image.getexif().get(274) in (5, 6, 7, 8):
+            width, height = height, width
+    return path.read_bytes(), width, height, content_type
+
+
 def upload(session: requests.Session, base: str, s: Settings, path: Path) -> str:
-    full, width, height = prepare(path, STORE_MAX_EDGE)
+    full, width, height, content_type = prepare_original(path)
 
     r = session.post(
         f"{base}/media/upload",
         params={"collection": s.collection_id},
         data=full,
         headers={
-            "content-type": "image/jpeg",
+            "content-type": content_type,
             "x-file-name": path.name,
             "x-width": str(width),
             "x-height": str(height),
@@ -442,8 +456,8 @@ def check_folder(folder: Path) -> int:
             print(f"  paired    {path.name}  (the developed copy is uploaded instead)")
             continue
         try:
-            data, width, height = prepare(path, STORE_MAX_EDGE)
-            print(f"  ok        {path.name}  -> {width}x{height}, {len(data) // 1024} KB")
+            data, width, height, _ = prepare_original(path)
+            print(f"  ok        {path.name}  -> original {width}x{height}, {len(data) // 1024} KB")
         except Exception as e:  # noqa: BLE001 - reporting every failure is the point
             failures += 1
             print(f"  CANNOT    {path.name}  -> {e}")

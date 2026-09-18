@@ -19,11 +19,9 @@
  */
 
 import { detectFacesThorough } from "./face";
-import { encodeImage, savingsPercent } from "./encode";
+import { encodeImage } from "./encode";
 import { downscale, fileToImage } from "./images";
 
-/** Long edge of the stored image. */
-export const STORE_MAX_EDGE = 2048;
 /** Long edge of the grid thumbnail. */
 export const THUMB_MAX_EDGE = 512;
 
@@ -77,19 +75,24 @@ export async function uploadPhoto(opts: {
 }): Promise<UploadedPhoto> {
   const { collectionId, file, onStep } = opts;
 
+  if (!["image/jpeg", "image/png", "image/webp", "image/avif"].includes(file.type)) {
+    throw new Error("Choose a JPEG, PNG, WebP or AVIF original. Other formats are not converted automatically.");
+  }
+  if (file.size > 25 * 1024 * 1024) {
+    throw new Error("The original exceeds the 25 MB upload limit. It has not been resized or uploaded.");
+  }
   onStep?.("encoding");
   const img = await fileToImage(file);
-  const stored = downscale(img, STORE_MAX_EDGE);
-  const encoded = await encodeImage(stored.canvas);
 
   onStep?.("storing");
+  // Send the File itself: canvas encoding would discard original pixels and metadata.
   const created = await postBytes(
     `/media/upload?collection=${encodeURIComponent(collectionId)}`,
-    encoded.blob,
+    file,
     {
       "x-file-name": file.name,
-      "x-width": String(stored.canvas.width),
-      "x-height": String(stored.canvas.height),
+      "x-width": String(img.naturalWidth),
+      "x-height": String(img.naturalHeight),
     },
   );
   if (!created.ok) throw new Error(await readError(created, "Could not store the photo"));
@@ -109,7 +112,7 @@ export async function uploadPhoto(opts: {
   // Several passes over the frame. A single downscaled pass loses every face
   // that is small in the original, and a face never detected can never match.
   const analysis = await detectFacesThorough(img);
-  const scale = stored.canvas.width / analysis.canvas.width;
+  const scale = img.naturalWidth / analysis.canvas.width;
   const faces = analysis.faces.map((f) => ({
     descriptor: f.descriptor,
     score: f.score,
@@ -142,7 +145,7 @@ export async function uploadPhoto(opts: {
   return {
     photoId,
     bytesIn: file.size,
-    bytesOut: encoded.blob.size + thumbEncoded.blob.size,
+    bytesOut: file.size + thumbEncoded.blob.size,
     faces: faces.length,
     indexed: indexedCount,
     indexPending,
@@ -226,6 +229,3 @@ export async function uploadPhotos(opts: {
 
   return p;
 }
-
-/** How much smaller the stored copies are than what was handed in. */
-export const uploadSavings = (p: BulkProgress) => savingsPercent(p.bytesIn, p.bytesOut);

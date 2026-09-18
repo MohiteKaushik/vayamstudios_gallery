@@ -14,7 +14,7 @@ import { EmptyState, GlassButton, GlassCard, Shimmer, useConfirm } from "@/compo
 import { useRequireAuth } from "@/lib/auth-gate";
 import { formatCount } from "@/lib/images";
 import { api, ApiError, confidencePercent, type Photo, type ScanHit, type ScanResult } from "@/lib/api";
-import { uploadPhotos, uploadSavings, type BulkProgress } from "@/lib/upload";
+import { uploadPhotos, type BulkProgress } from "@/lib/upload";
 import { keepIndexing, reanalyseCollection } from "@/lib/reanalyse";
 import { DuplicatesPanel } from "@/components/DuplicatesPanel";
 import { dayLabel, timeLabel } from "@/lib/time";
@@ -354,10 +354,8 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
           : r.indexed >= r.faces
             ? `${formatCount(r.faces, "face")} searchable`
             : `${formatCount(r.faces, "face")} found, ${r.indexed} searchable`;
-      const saved = uploadSavings(r);
-      const savedNote = r.bytesIn > 0 && saved > 0 ? ` · saved ${saved}% storage` : "";
       const failedNote = r.failed > 0 ? ` · ${r.failed} failed` : "";
-      toast.success(`Added ${formatCount(added, "photo")} · ${faceNote}${savedNote}${failedNote}`);
+      toast.success(`Added ${formatCount(added, "photo")} · ${faceNote}${failedNote}`);
 
       if (r.failed > 0 && r.firstError) toast.error(r.firstError);
       if (r.indexPending > 0) {

@@ -32,8 +32,11 @@ copied off the card is never uploaded half-written.
 | HEIC and HEIF, what an iPhone writes | `pillow-heif` |
 | Raw: ARW, CR2, CR3, NEF, DNG, ORF, RAF, RW2, PEF, SRW and the rest | `rawpy` |
 
-**Start uploading.bat** installs all of it. Everything is converted to JPEG
-before it goes up, so the gallery only ever holds one format.
+**Start uploading.bat** installs all of it. Decoding support above does not imply
+upload support: uploads accept JPEG, PNG, WebP and AVIF originals, unchanged,
+up to 25 MB per file. Only the separate 512-pixel gallery thumbnail is compressed.
+RAW, HEIC, TIFF, BMP and GIF must be exported to a supported format first;
+the uploader refuses them rather than silently converting the download file.
 
 A camera set to raw plus JPEG writes two files for one press of the shutter,
 `DSC01234.ARW` and `DSC01234.JPG`. Both are found and one is uploaded: the
@@ -41,10 +44,14 @@ JPEG, because it is the picture the camera already developed and it opens in a
 fraction of the time. Without this every frame would appear twice and every
 guest would find themselves twice.
 
-For a raw file with no JPEG beside it, the full-size preview inside the raw is
-used where there is one, which is quick. Where there is not, the sensor data is
-developed with the camera's own white balance, which takes about a second a
-frame.
+For a raw file with no supported developed image beside it, export a JPEG
+using your photography software before uploading.
+
+Existing reduced uploads cannot recover their original detail automatically.
+Re-upload originals after deployment, preferably into a new collection to verify
+them before removing older copies. Uploads create new photos, not replacements.
+The watcher still skips filenames recorded in `uploaded.json`; use the browser
+uploader for a deliberate re-upload instead of deleting its upload history.
 
 ### Check this before the event
 
