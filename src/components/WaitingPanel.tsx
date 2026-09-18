@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Clock, Download, MessageCircle, Phone, ScanFace, Search, UserCheck, UserRound, X } from "lucide-react";
+import { Clock, Download, Eye, MessageCircle, Phone, ScanFace, Search, UserCheck, UserRound, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { EmptyState, GlassButton, GlassCard, Shimmer } from "@/components/ui-kit";
@@ -20,9 +20,10 @@ import { filterWaitingMembers } from "@/lib/waiting-search";
  *
  * A name leaves this list the moment one of their searches succeeds.
  */
-export function WaitingPanel({ onDownloadPhotos, onReferencePhoto, downloadBusy = false }: {
+export function WaitingPanel({ onDownloadPhotos, onReferencePhoto, onPreviewPhotos, downloadBusy = false }: {
   onDownloadPhotos?: (row: WaitingRow) => void;
   onReferencePhoto?: (row: WaitingRow) => void;
+  onPreviewPhotos?: (row: WaitingRow) => void;
   downloadBusy?: boolean;
 }) {
   const waiting = useQuery({
@@ -131,7 +132,13 @@ export function WaitingPanel({ onDownloadPhotos, onReferencePhoto, downloadBusy 
                     )}
                   </p>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex max-w-full shrink-0 flex-wrap items-center gap-2">
+                  {onPreviewPhotos && <button type="button" disabled={downloadBusy}
+                    aria-label={`Preview photos for ${r.fullName || r.email}`} title="Preview matched photos"
+                    onClick={() => onPreviewPhotos(r)}
+                    className="press flex size-10 items-center justify-center rounded-full bg-secondary text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+                    <Eye className="size-4" />
+                  </button>}
                   {onDownloadPhotos && (
                     <GlassButton size="sm" variant="quiet" disabled={downloadBusy}
                       icon={r.hasReference ? <Download className="size-4" /> : <ScanFace className="size-4" />}

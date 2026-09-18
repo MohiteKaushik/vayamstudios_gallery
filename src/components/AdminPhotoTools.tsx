@@ -1,11 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
-import { Download, ImagePlus, UserRound, X } from "lucide-react";
+import { Download, Eye, ImagePlus, UserRound, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { WaitingPanel } from "./WaitingPanel";
 import { GlassButton } from "./ui-kit";
 import { api, ApiError, type WaitingRow } from "@/lib/api";
 import { choosePhotoDirectory, downloadPhotos } from "@/lib/photo-download";
 import { waitingSelection } from "@/lib/waiting-selection";
+import { AdminPhotoPreview } from "./AdminPhotoPreview";
+
+type PhotoMatches = Awaited<ReturnType<typeof api.adminPhotoSearch>>;
 
 export function AdminPhotoTools() {
   const collections = useQuery({ queryKey: ["export-collections"], queryFn: api.listCollections });
@@ -19,6 +22,10 @@ export function AdminPhotoTools() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [archive, setArchive] = useState<{ url: string; name: string } | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [matches, setMatches] = useState<{
+    collectionId: string; userId: string | undefined; references: number[][] | null; result: PhotoMatches;
+  } | null>(null);
   const controller = useRef<AbortController | null>(null);
   const panel = useRef<HTMLElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -36,6 +43,7 @@ export function AdminPhotoTools() {
   async function pick(file: File | undefined) {
     if (!file || controller.current || member) return;
     setArchive(null);
+    setMatches(null);
     setReferences(null);
     setFile(null);
     setMessage("");
@@ -65,11 +73,12 @@ export function AdminPhotoTools() {
     }
   }
 
-  async function run(row?: WaitingRow, zipOnly = false) {
+  async function run(row?: WaitingRow, zipOnly = false, previewOnly = false) {
     if (controller.current) return;
     const cid = row?.collectionId || selectedEvent;
     const person = row ? waitingSelection(row) : member;
     if (row) {
+      setMatches(null);
       setMember(person);
       setName(person!.fullName);
       setCollectionId(cid);
@@ -77,17 +86,19 @@ export function AdminPhotoTools() {
       setFile(null);
     }
     if (!cid || (!person && !references)) return;
+    if (previewOnly) { setPreviewOpen(true); setMatches(null); }
     const abort = new AbortController();
     controller.current = abort;
     setBusy(true);
     setError("");
-    setMessage("Choose a download folder...");
+    setMessage(previewOnly ? "Finding matched photos..." : "Choose a download folder...");
     setArchive(null);
     let saved = 0;
     try {
       // Never silently substitute a different event for an old waiting entry.
       if (row && collections.data && !collections.data.some((event) => event.id === cid)) {
         setCollectionId("");
+        setPreviewOpen(false);
         setError(`The event from ${person!.fullName}'s earlier search is unavailable. Choose the current event below; their saved reference is selected.`);
         setMessage("");
         void collections.refetch();
@@ -95,13 +106,16 @@ export function AdminPhotoTools() {
         return;
       }
       // Must be requested while the download button still has user activation.
-      const directory = zipOnly ? null : await choosePhotoDirectory();
+      const directory = zipOnly || previewOnly ? null : await choosePhotoDirectory();
       abort.signal.throwIfAborted();
-      if (row) panel.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (row && !previewOnly) panel.current?.scrollIntoView({ behavior: "smooth", block: "center" });
       setMessage(`Finding photos for ${person?.fullName || name || "this person"}...`);
       let result;
       try {
-        result = await api.adminPhotoSearch(
+        // A download after preview uses exactly the matches the admin reviewed.
+        result = !row && !previewOnly && matches?.collectionId === cid &&
+          matches.userId === person?.userId && matches.references === references
+          ? matches.result : await api.adminPhotoSearch(
           person ? { collectionId: cid, userId: person.userId } : { collectionId: cid, references: references! },
           abort.signal,
         );
@@ -125,6 +139,12 @@ export function AdminPhotoTools() {
         }
         abort.signal.throwIfAborted();
         result = await api.adminPhotoSearch({ collectionId: cid, references: savedRefs }, abort.signal);
+      }
+      abort.signal.throwIfAborted();
+      setMatches({ collectionId: cid, userId: person?.userId, references: row ? null : references, result });
+      if (previewOnly) {
+        setMessage(result.hits.length ? `${result.hits.length} matching photos` : "No matching photos found.");
+        return;
       }
       if (!result.hits.length) {
         setMessage("No matching photos found. Nothing was downloaded.");
@@ -157,6 +177,8 @@ export function AdminPhotoTools() {
       if (warnings.length) setError(warnings.join(" "));
     } catch (e) {
       if (e instanceof ApiError && e.code === "no-event") {
+        setPreviewOpen(false);
+        setMatches(null);
         setCollectionId("");
         void collections.refetch();
         setMessage("");
@@ -165,7 +187,7 @@ export function AdminPhotoTools() {
         return;
       }
       const cancelled = abort.signal.aborted || (e instanceof DOMException && e.name === "AbortError");
-      setMessage(cancelled ? `Cancelled. ${saved} photos processed; already saved files remain in your folder.` : "");
+      setMessage(cancelled ? (previewOnly ? "Preview cancelled" : `Cancelled. ${saved} photos processed; already saved files remain in your folder.`) : "");
       if (!cancelled) setError((e instanceof Error ? e.message : "Download failed") +
         (saved ? ` ${saved} photos were processed before the error.` : ""));
     } finally {
@@ -176,14 +198,20 @@ export function AdminPhotoTools() {
 
   return (
     <>
-      <WaitingPanel onDownloadPhotos={(row) => void run(row)} onReferencePhoto={(row) => void run(row)} downloadBusy={busy} />
+      <WaitingPanel onDownloadPhotos={(row) => void run(row)} onReferencePhoto={(row) => void run(row)}
+        onPreviewPhotos={(row) => void run(row, false, true)} downloadBusy={busy} />
+      <AdminPhotoPreview open={previewOpen} onOpenChange={(open) => { setPreviewOpen(open); if (!open) controller.current?.abort(); }}
+        name={member?.fullName || name || "Selected person"} result={matches?.result ?? null}
+        busy={busy} message={message} error={error} archive={archive}
+        onRetry={() => void run(undefined, false, true)} onDownload={(zip) => void run(undefined, zip)}
+        onCancel={() => controller.current?.abort()} />
       <section ref={panel} className="mt-10 border-t border-hairline pt-8" aria-labelledby="photo-export-title">
         <h2 id="photo-export-title" className="text-sm font-medium uppercase text-muted-foreground">{member ? "Download member photos" : "Download by reference photo"}</h2>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <label className="min-w-0 text-sm">
             Event
             <select aria-label="Download event" value={selectedEvent} disabled={busy || collections.isLoading}
-              onChange={(e) => setCollectionId(e.target.value)}
+              onChange={(e) => { setCollectionId(e.target.value); setMatches(null); setArchive(null); setMessage(""); setError(""); }}
               className="mt-2 block w-full min-w-0 rounded-lg border border-hairline bg-secondary p-3">
               <option value="">Choose event</option>
               {selectedEvent && !collections.data?.some((event) => event.id === selectedEvent) &&
@@ -200,7 +228,7 @@ export function AdminPhotoTools() {
         {member && <div className="mt-4 flex flex-wrap items-center gap-3 text-sm">
           <SavedMemberReference key={member.userId} member={member} />
           <GlassButton variant="quiet" size="sm" disabled={busy} icon={<X className="size-4" />}
-            onClick={() => { setMember(null); setName(""); setReferences(null); setFile(null); setArchive(null); setMessage(""); setError(""); }}>
+            onClick={() => { setMember(null); setName(""); setReferences(null); setFile(null); setMatches(null); setArchive(null); setMessage(""); setError(""); }}>
             Clear member
           </GlassButton>
         </div>}
@@ -211,6 +239,8 @@ export function AdminPhotoTools() {
           {!member && preview && <img src={preview} alt="Selected reference" className="size-16 rounded-lg object-cover" />}
           {!member && <GlassButton variant="quiet" icon={<ImagePlus className="size-4" />} disabled={busy}
             onClick={() => input.current?.click()}>{file ? "Replace reference" : "Choose person photo"}</GlassButton>}
+          <GlassButton variant="quiet" icon={<Eye className="size-4" />} disabled={busy || (!references && !member) || !selectedEvent}
+            onClick={() => void run(undefined, false, true)}>Preview photos</GlassButton>
           <GlassButton icon={<Download className="size-4" />} disabled={busy || (!references && !member) || !selectedEvent}
             onClick={() => void run()}>Download photos</GlassButton>
           <GlassButton variant="quiet" icon={<Download className="size-4" />} disabled={busy || (!references && !member) || !selectedEvent}
