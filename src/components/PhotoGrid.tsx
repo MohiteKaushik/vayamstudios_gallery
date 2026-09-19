@@ -1,6 +1,7 @@
 import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Shimmer } from "./ui-kit";
+import { photoAspectRatio } from "@/lib/photo-layout";
 
 /**
  * A photo, carrying the URLs to fetch it.
@@ -28,21 +29,23 @@ export function PhotoGrid({
   selected,
   onToggleSelect,
   showConfidence,
+  singleColumn = false,
 }: {
   photos: GridPhoto[];
   onOpen: (index: number) => void;
   selected?: Set<string>;
   onToggleSelect?: (id: string) => void;
   showConfidence?: boolean;
+  singleColumn?: boolean;
 }) {
   return (
-    <div className="[column-fill:_balance] columns-2 gap-3 md:columns-3 xl:columns-4">
+    <div className={singleColumn ? "" : "[column-fill:_balance] columns-2 gap-3 md:columns-3 xl:columns-4"}>
       {photos.map((photo, index) => {
-        const ratio = photo.width && photo.height ? photo.width / photo.height : 3 / 4;
+        const ratio = photoAspectRatio(photo);
         const isSelected = selected?.has(photo.id);
 
         return (
-          <div key={photo.id} className="mb-3 break-inside-avoid">
+          <div key={photo.id} className={singleColumn ? "" : "mb-3 break-inside-avoid"}>
             <div
               role="button"
               tabIndex={0}
