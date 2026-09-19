@@ -313,8 +313,9 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
   const parts = url.pathname.slice(API_PREFIX.length + 1).split("/").filter(Boolean);
   const [head, ...rest] = parts;
 
-  // Sign-in and sign-up are the only routes reachable without a session.
+  // Shared galleries expose only explicitly shared event previews.
   if (head === "auth") return handleAuth(request, env, rest);
+  if (head === "share") return publicEventShare(request, env, url, rest);
 
   const userId = await currentUserId(request, env);
 
@@ -376,6 +377,21 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
   }
 
   if (head === "site" && rest[0] === "events") {
+    if (rest[1] === "share") {
+      if (!isAdmin) return json({ error: "Admins only" }, 403);
+      if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+      let body: { id?: string } | null;
+      try { body = await request.json() as typeof body; } catch { return json({ error: "Malformed body" }, 400); }
+      if (!body || typeof body.id !== "string") return json({ error: "Choose an event to share" }, 400);
+      const event = (await readShowcase(env)).find((e) => e.id === body?.id);
+      if (!event || event.hidden) return json({ error: "Unhide the event before sharing it" }, 404);
+      const key = `site/event-share/${event.id}`;
+      const previous = await readJson<{ token: string }>(env.PHOTOS, key);
+      const token = previous?.token ?? crypto.randomUUID();
+      await writeJson(env.PHOTOS, `site/share-links/${token}`, { eventId: event.id });
+      await writeJson(env.PHOTOS, key, { token });
+      return json({ path: `/share/${token}` });
+    }
     if (request.method === "GET") return json({ events: (await readShowcase(env)).filter((event) => isAdmin || !event.hidden) });
     if (!isAdmin) return json({ error: "Admins only" }, 403);
     if (request.method === "PATCH") return setRecentEvent(request, env, userId);
@@ -586,6 +602,48 @@ async function readShowcase(env: MediaEnv, records?: CollectionRecord[]): Promis
     };
   });
   return resolved.filter((event) => !event.deleted).map(({ deleted: _deleted, ...event }) => event);
+}
+
+async function publicEventShare(request: Request, env: MediaEnv, url: URL, parts: string[]): Promise<Response> {
+  const [token, action, cid, pid] = parts;
+  const missing = () => json({ error: "This shared event is not available" }, 404);
+  if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "Method not allowed" }, 405);
+  if (!token || !isSafeId(token)) return missing();
+  const link = await readJson<{ eventId: string }>(env.PHOTOS, `site/share-links/${token}`);
+  if (!link) return missing();
+  const setting = await readJson<{ hidden?: boolean; deleted?: boolean }>(env.PHOTOS, `site/recent-events/${link.eventId}`);
+  if (setting?.hidden || setting?.deleted) return missing();
+  if (!action && parts.length === 1) {
+    const records = await collectionRecords(env);
+    const event = (await readShowcase(env, records)).find((e) => e.id === link.eventId && !e.hidden);
+    if (!event) return missing();
+    return json({ event: { id: event.id, name: event.name }, albums: records
+      .filter((c) => event.collectionIds.includes(c.id))
+      .map((c) => ({ id: c.id, name: c.name })) });
+  }
+  if (!cid || !isSafeId(cid)) return missing();
+  const album = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(cid));
+  if (!album || (album.showcaseEventId ?? LEGACY_RECENT_EVENT_ID) !== link.eventId) return missing();
+  if (action === "photos" && parts.length === 3) {
+    const page = await env.PHOTOS.list({ prefix: `meta/photo/${cid}/`, limit: 40,
+      ...(url.searchParams.get("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}) });
+    const records = await mapLimit(page.objects, READ_CONCURRENCY, (o) => readJson<PhotoMeta>(env.PHOTOS, o.key));
+    return json({ photos: records.filter((p): p is PhotoMeta => !!p && isSafeId(p.id)).map((p) => {
+      const preview = `/api/share/${token}/preview/${cid}/${p.id}`;
+      return { id: p.id, fileName: p.fileName, width: p.width, height: p.height, thumbUrl: preview, fullUrl: preview };
+    }), ...(page.truncated && page.cursor ? { cursor: page.cursor } : {}) });
+  }
+  if (action !== "preview" || parts.length !== 4 || !pid || !isSafeId(pid)) return missing();
+  if (!(await env.PHOTOS.head(photoMetaKey(cid, pid)))) return missing();
+  // Never fall back to an original, even when an old upload has no thumbnail.
+  const object = await env.PHOTOS.get(`thumb/${cid}/${pid}`);
+  if (!object) return missing();
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("cache-control", "no-store");
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("referrer-policy", "no-referrer");
+  return new Response(request.method === "HEAD" ? null : object.body, { headers });
 }
 
 async function collectionHidden(env: MediaEnv, cid: string): Promise<boolean> {

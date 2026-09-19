@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { SHARE_RETURN_KEY, safeShareReturn } from "./share-return";
 
 /**
  * Who is signed in.
@@ -46,7 +47,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     try {
       const res = await fetch("/api/me", { credentials: "same-origin" });
       // A 401 is the normal signed-out answer, not a failure.
-      setUser(res.ok ? ((await res.json()) as Member) : null);
+      const member = res.ok ? ((await res.json()) as Member) : null;
+      if (member) {
+        try {
+          const destination = safeShareReturn(sessionStorage.getItem(SHARE_RETURN_KEY));
+          sessionStorage.removeItem(SHARE_RETURN_KEY);
+          if (destination && window.location.pathname + window.location.search !== destination) {
+            window.location.replace(destination);
+            return;
+          }
+        } catch { /* Sign-in still works when browser storage is unavailable. */ }
+      }
+      setUser(member);
     } catch {
       setUser(null);
     } finally {

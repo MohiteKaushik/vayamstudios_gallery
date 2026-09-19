@@ -8,6 +8,7 @@ import { confirmEventDeletion } from "@/lib/confirm-event-deletion";
 import { api } from "@/lib/api";
 import { contact, eventSubtitle, shownTitle, type EventRenames, type VayamEvent, type ShowcaseEvent } from "@/lib/vayam";
 import { Switch } from "./ui/switch";
+import { EventShareButton } from "./EventShareButton";
 
 /**
  * The studio's past work, shown to a member once their face profile is set up.
@@ -265,6 +266,7 @@ function EditableEventRow({
         <Trash2 className="size-4" />
       </button>}
       <div className="flex w-full flex-wrap items-center justify-between gap-3 border-t border-hairline pt-3">
+        <EventShareButton eventId={event.id} name={title} disabled={busy || !!event.hidden} />
         <label className="flex items-center gap-3 text-sm">
           <Switch checked={!!event.hidden} disabled={busy} onCheckedChange={(checked) => hidden.mutate(checked)}
             aria-label={`Hide ${title} from members`} />

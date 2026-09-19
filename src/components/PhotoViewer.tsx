@@ -23,6 +23,7 @@ export function PhotoViewer({
   onClose,
   isFavorite,
   onToggleFavorite,
+  onDownload,
 }: {
   photos: ViewerPhoto[];
   index: number;
@@ -30,6 +31,7 @@ export function PhotoViewer({
   onClose: () => void;
   isFavorite?: (id: string) => boolean;
   onToggleFavorite?: (id: string) => void;
+  onDownload?: (photo: ViewerPhoto) => void;
 }) {
   const photo = photos[index];
   const [details, setDetails] = useState(false);
@@ -87,7 +89,7 @@ export function PhotoViewer({
             variant="ghost"
             size="sm"
             aria-label="Download photo"
-            onClick={() => downloadPhoto(photo.fullUrl, photo.fileName ?? undefined)}
+            onClick={() => onDownload ? onDownload(photo) : downloadPhoto(photo.fullUrl, photo.fileName ?? undefined)}
             icon={<Download className="size-4" />}
           />
         </div>
