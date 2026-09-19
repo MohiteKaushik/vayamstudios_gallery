@@ -7,6 +7,7 @@
  */
 
 import type { MemberRow } from "./members";
+import type { ShowcaseEvent } from "./vayam";
 
 export type Collection = {
   id: string;
@@ -176,10 +177,21 @@ export const api = {
   listCollections: () =>
     call<{ collections: Collection[] }>("/api/collections").then((r) => r.collections),
 
-  createCollection: (name: string, description?: string) =>
+  listRecentCollections: () =>
+    call<{ collections: Collection[] }>("/api/collections?recent=1").then((r) => r.collections),
+
+  showcaseEvents: () => call<{ events: ShowcaseEvent[] }>("/api/site/events").then((r) => r.events),
+  deleteShowcaseEvent: (id: string) => call<{ groupIds: string[] }>("/api/site/events", {
+    method: "DELETE", body: JSON.stringify({ id, confirmed: true }),
+  }),
+  setRecentEvent: (id: string, recent: boolean) => call<{ events: ShowcaseEvent[] }>("/api/site/events", {
+    method: "PATCH", body: JSON.stringify({ id, recent }),
+  }).then((r) => r.events),
+
+  createCollection: (name: string, description?: string, recent = true) =>
     call<Collection>("/api/collections", {
       method: "POST",
-      body: JSON.stringify({ name, description }),
+      body: JSON.stringify({ name, description, recent }),
     }),
 
   listPhotos: (collectionId: string, cursor?: string, limit = 40) =>

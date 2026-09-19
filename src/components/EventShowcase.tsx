@@ -1,27 +1,23 @@
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronLeft, Globe, Mail, MessageCircle, Pencil, Phone } from "lucide-react";
+import { Check, ChevronLeft, Globe, Mail, MessageCircle, Pencil, Phone, Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { GlassButton, GlassCard } from "@/components/ui-kit";
+import { GlassButton, GlassCard, useConfirm } from "@/components/ui-kit";
+import { confirmEventDeletion } from "@/lib/confirm-event-deletion";
 import { api } from "@/lib/api";
-import { contact, events, eventSubtitle, shownTitle, type EventRenames, type VayamEvent } from "@/lib/vayam";
-
-const RECENT_EVENT_SHOWCASE_ID = "ttpoc-carreer-nexus-3";
-
-function useRenames() {
-  return useQuery({ queryKey: ["past-events"], retry: false, queryFn: api.pastEventRenames });
-}
+import { contact, eventSubtitle, shownTitle, type EventRenames, type VayamEvent, type ShowcaseEvent } from "@/lib/vayam";
+import { Switch } from "./ui/switch";
 
 /**
  * The studio's past work, shown to a member once their face profile is set up.
  *
- * Most past events open a way to reach the team. The current TTPOC event opens
- * the Recent Event gallery because those photos are published in the app.
+ * Recent selections open the gallery; other events keep their contact panel.
  */
 export function EventShowcase({ editable = false }: { editable?: boolean }) {
   const [selected, setSelected] = useState<VayamEvent | null>(null);
-  const renames = useRenames().data;
+  const showcase = useQuery({ queryKey: ["showcase-events"], retry: false, queryFn: api.showcaseEvents });
+  const renames = undefined;
 
   // Escape closes the panel, matching every other layer in the app.
   useEffect(() => {
@@ -42,16 +38,15 @@ export function EventShowcase({ editable = false }: { editable?: boolean }) {
       </h2>
       <p className="mb-5 text-sm text-muted-foreground">
         {editable
-          ? "Members see this list on their home page. Press the pencil to rename an event."
+          ? "Members see this list on their home page."
           : "Select any of these to talk to the team about your own."}
       </p>
+      {editable && <NewShowcaseEvent />}
+      {showcase.isLoading && <p role="status" className="text-sm text-muted-foreground">Loading events...</p>}
+      {showcase.isError && <p role="alert" className="text-sm text-destructive">Could not load events. <button className="underline" onClick={() => void showcase.refetch()}>Retry</button></p>}
 
       <ul className="space-y-2">
-        {/* Newest first. The studio's own list runs oldest to newest, and that
-            order is kept in vayam.ts because it is theirs; it is only reversed
-            for display, so the most recent work is what a visitor reads first,
-            and numbered from the top. */}
-        {[...events].reverse().map((event, i) => {
+        {(showcase.data ?? []).map((event, i) => {
           const place = eventSubtitle(event);
           const number = i + 1;
           if (editable) {
@@ -61,7 +56,7 @@ export function EventShowcase({ editable = false }: { editable?: boolean }) {
               </li>
             );
           }
-          if (event.id === RECENT_EVENT_SHOWCASE_ID) {
+          if (event.recent) {
             return (
               <li key={event.id}>
                 <Link
@@ -143,7 +138,7 @@ function EditableEventRow({
   place,
   renames,
 }: {
-  event: VayamEvent;
+  event: ShowcaseEvent;
   number: number;
   place: string | null;
   renames: EventRenames | undefined;
@@ -152,20 +147,52 @@ function EditableEventRow({
   const title = shownTitle(event, renames);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
+  const { ask, dialog } = useConfirm();
+  const [confirming, setConfirming] = useState(false);
+  const remove = useMutation({
+    mutationFn: () => api.deleteShowcaseEvent(event.id),
+    onSuccess: () => {
+      for (const key of ["showcase-events", "collections", "recent-collections", "export-collections", "bin", "photos"]) {
+        void qc.invalidateQueries({ queryKey: [key] });
+      }
+      toast.success("Event and photos moved to the recycle bin for 30 days");
+    },
+    onError: (e) => {
+      for (const key of ["showcase-events", "collections", "recent-collections", "bin"]) void qc.invalidateQueries({ queryKey: [key] });
+      toast.error(e instanceof Error ? e.message : "Could not delete event");
+    },
+  });
 
   const rename = useMutation({
     mutationFn: (next: string) => api.renamePastEvent(event.id, next),
     onSuccess: (next) => {
       qc.setQueryData(["past-events"], next);
-      toast.success(`Renamed to "${shownTitle(event, next)}"`);
+      void qc.invalidateQueries({ queryKey: ["showcase-events"] });
+      void qc.invalidateQueries({ queryKey: ["collections"] });
+      void qc.invalidateQueries({ queryKey: ["recent-collections"] });
+      toast.success("Event renamed");
       setEditing(false);
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Could not rename the event"),
   });
 
+  const visibility = useMutation({
+    mutationFn: (recent: boolean) => api.setRecentEvent(event.id, recent),
+    onSuccess: (events) => {
+      qc.setQueryData(["showcase-events"], events);
+      void qc.invalidateQueries({ queryKey: ["collections"] });
+      void qc.invalidateQueries({ queryKey: ["recent-collections"] });
+      void qc.invalidateQueries({ queryKey: ["export-collections"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not update event"),
+  });
+
   const trimmed = draft.trim();
+  const busy = confirming || remove.isPending || rename.isPending || visibility.isPending;
   return (
-    <GlassCard className="flex items-center gap-4 px-5 py-3">
+    <>
+    {dialog}
+    <GlassCard className="flex flex-wrap items-center gap-4 px-5 py-3">
       <span className="w-6 shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
         {String(number).padStart(2, "0")}
       </span>
@@ -205,6 +232,7 @@ function EditableEventRow({
           <button
             type="button"
             aria-label={`Rename ${title}`}
+            disabled={busy}
             onClick={() => {
               setDraft(title);
               setEditing(true);
@@ -215,8 +243,54 @@ function EditableEventRow({
           </button>
         </>
       )}
+      {!editing && <button type="button" title="Delete event" aria-label={`Delete ${title}`}
+        disabled={busy}
+        onClick={async () => {
+          setConfirming(true);
+          try {
+            if (await confirmEventDeletion(ask, title)) remove.mutate();
+          } finally { setConfirming(false); }
+        }}
+        className="press flex size-10 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40">
+        <Trash2 className="size-4" />
+      </button>}
+      <div className="flex w-full flex-wrap items-center justify-between gap-3 border-t border-hairline pt-3">
+        <label className="flex items-center gap-3 text-sm">
+          <Switch checked={event.recent} disabled={busy} onCheckedChange={(checked) => visibility.mutate(checked)}
+            aria-label={`Show ${title} in recent events`} />
+          Show in recent events
+        </label>
+        {event.collectionIds.length > 0 && <Link to="/collections" search={{ shared: event.collectionIds.length === 1 ? event.collectionIds[0] : undefined }}
+          className="text-sm underline">Manage photos</Link>}
+      </div>
     </GlassCard>
+    </>
   );
+}
+
+function NewShowcaseEvent() {
+  const qc = useQueryClient();
+  const [name, setName] = useState("");
+  const [recent, setRecent] = useState(true);
+  const create = useMutation({
+    mutationFn: () => api.createCollection(name.trim(), undefined, recent),
+    onSuccess: () => {
+      setName("");
+      void qc.invalidateQueries({ queryKey: ["showcase-events"] });
+      void qc.invalidateQueries({ queryKey: ["collections"] });
+      void qc.invalidateQueries({ queryKey: ["recent-collections"] });
+      void qc.invalidateQueries({ queryKey: ["export-collections"] });
+      toast.success("Event added");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not add event"),
+  });
+  return <form className="mb-6 flex flex-wrap items-center gap-3" onSubmit={(e) => { e.preventDefault(); if (name.trim().length >= 2) create.mutate(); }}>
+    <input aria-label="New event name" placeholder="New event name" value={name} maxLength={120} required minLength={2}
+      disabled={create.isPending} onChange={(e) => setName(e.target.value)}
+      className="h-11 w-full min-w-0 rounded-lg border border-hairline bg-secondary px-4 text-sm sm:flex-1" />
+    <label className="flex items-center gap-2 text-sm"><Switch checked={recent} disabled={create.isPending} onCheckedChange={setRecent} />Show in recent events</label>
+    <GlassButton type="submit" size="sm" icon={<Plus className="size-4" />} loading={create.isPending} disabled={name.trim().length < 2}>Add event</GlassButton>
+  </form>;
 }
 
 function EventDetail({

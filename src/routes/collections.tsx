@@ -19,6 +19,7 @@ import { keepIndexing, reanalyseCollection } from "@/lib/reanalyse";
 import { DuplicatesPanel } from "@/components/DuplicatesPanel";
 import { dayLabel, timeLabel } from "@/lib/time";
 import { useIsAdmin } from "@/lib/roles";
+import { confirmEventDeletion } from "@/lib/confirm-event-deletion";
 
 const PHOTO_PAGE_SIZE = 40;
 
@@ -28,9 +29,9 @@ export const Route = createFileRoute("/collections")({
   }),
   head: () => ({
     meta: [
-      { title: "Recent Event | VAYAM Designers Gallery" },
+      { title: "Recent Events | VAYAM Designers Gallery" },
       { name: "description", content: "Find yourself in the photographs from the event." },
-      { property: "og:title", content: "Recent Event | VAYAM Designers Gallery" },
+      { property: "og:title", content: "Recent Events | VAYAM Designers Gallery" },
       { property: "og:description", content: "Find yourself in the photographs from the event." },
     ],
   }),
@@ -51,10 +52,12 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const allEvents = (isAdmin && showAll) || !!shared;
 
   const collections = useQuery({
-    queryKey: ["collections"],
-    queryFn: api.listCollections,
+    queryKey: allEvents ? ["collections"] : ["recent-collections"],
+    queryFn: allEvents ? api.listCollections : api.listRecentCollections,
     retry: false,
   });
 
@@ -64,6 +67,8 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
       setName("");
       setDescription("");
       qc.invalidateQueries({ queryKey: ["collections"] });
+      qc.invalidateQueries({ queryKey: ["showcase-events"] });
+      qc.invalidateQueries({ queryKey: ["recent-collections"] });
       navigate({ to: ".", search: { shared: created.id } });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Could not create the collection"),
@@ -74,6 +79,8 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ["collections"] });
       qc.invalidateQueries({ queryKey: ["bin"] });
+      qc.invalidateQueries({ queryKey: ["showcase-events"] });
+      qc.invalidateQueries({ queryKey: ["recent-collections"] });
       const groupId = r.groupId;
       toast.success("Event moved to the recycle bin", {
         description: "Restore it from the recycle bin in the admin console for 30 days.",
@@ -91,7 +98,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
           onClick={() => navigate({ to: ".", search: { shared: undefined } })}
           className="press mb-5 inline-flex items-center gap-1 rounded-full text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <ChevronLeft className="size-4" /> Recent Event
+          <ChevronLeft className="size-4" /> Recent Events
         </button>
         {isAdmin ? (
           <AdminCollection collectionId={shared} name={current?.name ?? "Collection"} />
@@ -107,7 +114,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <AppShell>
-      <h1 className="text-3xl font-semibold tracking-[-0.03em]">Recent Event</h1>
+      <h1 className="text-3xl font-semibold tracking-[-0.03em]">Recent Events</h1>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
         {isAdmin
           ? "Create an event, then add the photos to it. Every face is indexed once so members can find themselves."
@@ -150,6 +157,10 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
       )}
 
       <section className="mt-9">
+        {isAdmin && <label className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
+          <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} className="size-4" />
+          Show all events (admin)
+        </label>}
         {collections.isLoading ? (
           <Shimmer className="h-40" />
         ) : collections.isError ? (
@@ -195,11 +206,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
                       disabled={remove.isPending}
                       onClick={async (e) => {
                         e.stopPropagation();
-                        const ok = await ask({
-                          title: `Delete "${c.name}"?`,
-                          body: `The event and its ${formatCount(c.photoCount, "photo")} move to the recycle bin. You can restore them from the admin console for 30 days.`,
-                          confirmLabel: "Move to bin",
-                        });
+                        const ok = await confirmEventDeletion(ask, c.name);
                         if (ok) remove.mutate(c.id);
                       }}
                       className="press shrink-0 rounded-full p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
@@ -325,6 +332,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
       qc.invalidateQueries({ queryKey: ["photos", collectionId] });
       qc.invalidateQueries({ queryKey: ["collections"] });
       qc.invalidateQueries({ queryKey: ["bin"] });
+      qc.invalidateQueries({ queryKey: ["recent-collections"] });
       const groupId = r.groupId;
       toast.success(`Moved ${formatCount(r.deleted, "photo")} to the recycle bin`, {
         description: "Restore them from the admin console for 30 days.",
@@ -366,6 +374,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
       }
       qc.invalidateQueries({ queryKey: ["photos", collectionId] });
       qc.invalidateQueries({ queryKey: ["collections"] });
+      qc.invalidateQueries({ queryKey: ["recent-collections"] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Upload failed");
     } finally {
@@ -439,6 +448,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
       if (r.firstError) toast.error(r.firstError);
       qc.invalidateQueries({ queryKey: ["photos", collectionId] });
       qc.invalidateQueries({ queryKey: ["collections"] });
+      qc.invalidateQueries({ queryKey: ["recent-collections"] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not re-analyse this event");
     } finally {
@@ -567,7 +577,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
                     .then(() => {
                       qc.invalidateQueries({ queryKey: ["home-cover"] });
                       toast.success("Home cover updated", {
-                        description: "It now shows, blurred, behind Open recent event.",
+                        description: "It now shows, blurred, behind Open recent events.",
                       });
                     })
                     .catch((e) => toast.error(e instanceof Error ? e.message : "Could not set the cover"));
@@ -975,6 +985,8 @@ function EventTitle({ collectionId, name }: { collectionId: string; name: string
       toast.success(`Renamed to "${r.name}"`);
       setEditing(false);
       qc.invalidateQueries({ queryKey: ["collections"] });
+      qc.invalidateQueries({ queryKey: ["showcase-events"] });
+      qc.invalidateQueries({ queryKey: ["recent-collections"] });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Could not rename the event"),
   });
@@ -1037,7 +1049,7 @@ async function undoFromBin(qc: QueryClient, groupId: string) {
   } catch (e) {
     toast.error(e instanceof Error ? e.message : "Could not restore");
   } finally {
-    for (const queryKey of [["collections"], ["bin"], ["photos"]]) qc.invalidateQueries({ queryKey });
+    for (const queryKey of [["collections"], ["bin"], ["photos"], ["showcase-events"], ["recent-collections"], ["export-collections"]]) qc.invalidateQueries({ queryKey });
   }
 }
 

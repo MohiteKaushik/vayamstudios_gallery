@@ -44,7 +44,8 @@ function Home({ userId }: { userId: string }) {
     queryKey: ["collections"],
     retry: false,
     enabled: isAdmin.data === true,
-    queryFn: () => api.listCollections().then((c) => c.slice(0, 6)),
+    queryFn: api.listCollections,
+    select: (collections) => collections.slice(0, 6),
   });
 
 
@@ -89,7 +90,7 @@ function Home({ userId }: { userId: string }) {
       ) : (
         <p className="text-sm text-muted-foreground">
           {admin
-            ? "No events yet. Create one from the Recent Event tab and upload photos into it."
+            ? "No events yet. Create one from the Recent Events tab and upload photos into it."
             : "Nothing has been published yet. New events will show up here."}
         </p>
       )}
@@ -100,13 +101,13 @@ function Home({ userId }: { userId: string }) {
     return (
       <AppShell>
         <section className="rise-in">
-          <h1 className="text-3xl font-semibold tracking-[-0.03em]">Recent Event</h1>
+          <h1 className="text-3xl font-semibold tracking-[-0.03em]">Recent Events</h1>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
             Create an event, then upload the photos. Members see only the frames they appear in.
           </p>
           <Link to="/collections" search={{ shared: undefined }} className="mt-8 inline-flex">
             <GlassButton size="lg" icon={<Layers className="size-4" />}>
-              Open recent event
+              Open recent events
             </GlassButton>
           </Link>
         </section>
@@ -181,7 +182,7 @@ function RecentEventCard() {
       )}
       <Layers className={cn("mb-5 size-8", cover ? "text-foreground/80" : "text-muted-foreground")} strokeWidth={1.4} />
       <p className={cn("text-lg font-medium tracking-[-0.02em]", cover && "drop-shadow-[0_1px_8px_rgba(0,0,0,0.65)]")}>
-        Open recent event
+        Open recent events
       </p>
       <p className={cn("mt-1 text-sm", cover ? "text-foreground/80" : "text-muted-foreground")}>
         Photos are published by the organisers

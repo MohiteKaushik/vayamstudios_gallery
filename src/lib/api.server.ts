@@ -42,6 +42,7 @@ import {
   purgeExpired,
   readBinGroup,
   restoreFromBin,
+  trashEvent,
 } from "./media.server.ts";
 import {
   getMemberById,
@@ -69,7 +70,7 @@ import { searchCollection, indexPhotoFaces } from "./face-index.server.ts";
 import { MATCH_MAX_DISTANCE } from "./face.ts";
 import { cosineDistance } from "./insightface.ts";
 import { isFingerprint } from "./duplicates.ts";
-import { events as pastEvents, eventTitle } from "./vayam.ts";
+import { events as pastEvents, eventTitle, shownTitle, LEGACY_RECENT_EVENT_ID, type ShowcaseEvent } from "./vayam.ts";
 import type { R2Bucket } from "./storage.server.ts";
 
 export const API_PREFIX = "/api";
@@ -81,6 +82,8 @@ export type CollectionRecord = {
   coverPhotoId: string | null;
   createdBy: string;
   createdAt: number;
+  showcaseEventId?: string;
+  recent?: boolean;
 };
 
 export type ScanHit = {
@@ -327,7 +330,7 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
   const isAdmin = member.role === "admin";
 
   if (head === "collections") {
-    if (rest.length === 0 && request.method === "GET") return listCollections(env);
+    if (rest.length === 0 && request.method === "GET") return listCollections(env, url.searchParams.get("recent") === "1");
     if (rest.length === 0 && request.method === "POST") {
       if (!isAdmin) return json({ error: "Admins only" }, 403);
       return createCollection(request, env, userId);
@@ -366,6 +369,14 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
       return selfTest(env, cid);
     }
     return json({ error: "Not found" }, 404);
+  }
+
+  if (head === "site" && rest[0] === "events") {
+    if (request.method === "GET") return json({ events: await readShowcase(env) });
+    if (!isAdmin) return json({ error: "Admins only" }, 403);
+    if (request.method === "PATCH") return setRecentEvent(request, env, userId);
+    if (request.method === "DELETE") return deleteShowcaseEvent(request, env, userId);
+    return json({ error: "Method not allowed" }, 405);
   }
 
   if (head === "site" && rest[0] === "past-events") {
@@ -435,7 +446,7 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
 
 /* ------------------------------- collections ------------------------------ */
 
-async function listCollections(env: MediaEnv): Promise<Response> {
+async function collectionRecords(env: MediaEnv): Promise<CollectionRecord[]> {
   const keys: string[] = [];
   let cursor: string | undefined;
   do {
@@ -447,10 +458,19 @@ async function listCollections(env: MediaEnv): Promise<Response> {
   const records = await mapLimit(keys, READ_CONCURRENCY, (k) =>
     readJson<CollectionRecord>(env.PHOTOS, k),
   );
+  return records.filter((r): r is CollectionRecord => r !== null);
+}
+
+async function listCollections(env: MediaEnv, recentOnly = false): Promise<Response> {
+  let records = await collectionRecords(env);
+  if (recentOnly) {
+    const ids = new Set((await readShowcase(env, records)).filter((event) => event.recent).flatMap((event) => event.collectionIds));
+    records = records.filter((record) => ids.has(record.id));
+  }
 
   // Photo counts come from counting keys, which needs no record reads.
   const collections = await mapLimit(
-    records.filter((r): r is CollectionRecord => r !== null),
+    records,
     10,
     async (c) => {
       const cover = c.coverPhotoId ?? (await firstPhotoId(env.PHOTOS, c.id));
@@ -526,6 +546,81 @@ async function unindexedPhotos(
 
 const PAST_EVENTS_KEY = "site/past-events.json";
 
+async function readShowcase(env: MediaEnv, records?: CollectionRecord[]): Promise<ShowcaseEvent[]> {
+  const collections = records ?? await collectionRecords(env);
+  const renames = await readRenames(env);
+  const custom = collections.filter((c) => c.showcaseEventId === c.id).sort((a, b) => b.createdAt - a.createdAt);
+  const events = [
+    ...custom.map((c) => ({ id: c.id, name: c.name, recent: c.recent !== false })),
+    ...[...pastEvents].reverse().map((e) => {
+      const { year: _year, ...details } = e;
+      return { ...details, name: shownTitle(e, renames), recent: e.id === LEGACY_RECENT_EVENT_ID };
+    }),
+  ];
+  const resolved = await mapLimit(events, READ_CONCURRENCY, async (event) => {
+    const setting = await readJson<{ recent?: boolean; deleted?: boolean }>(env.PHOTOS, `site/recent-events/${event.id}`);
+    return {
+      ...event,
+      deleted: setting?.deleted === true,
+      recent: typeof setting?.recent === "boolean" ? setting.recent : event.recent,
+      // Existing day albums belonged to TTPOC before event associations existed.
+      collectionIds: collections.filter((c) => (c.showcaseEventId ?? LEGACY_RECENT_EVENT_ID) === event.id).map((c) => c.id),
+    };
+  });
+  return resolved.filter((event) => !event.deleted).map(({ deleted: _deleted, ...event }) => event);
+}
+
+async function deleteShowcaseEvent(request: Request, env: MediaEnv, userId: string): Promise<Response> {
+  let body: { id?: unknown; confirmed?: unknown } | null;
+  try { body = await request.json() as typeof body; } catch { return json({ error: "Malformed body" }, 400); }
+  if (!body || typeof body.id !== "string" || body.confirmed !== true) return json({ error: "Confirm the event deletion first" }, 400);
+  const event = (await readShowcase(env)).find((e) => e.id === body.id);
+  if (!event) return json({ error: "No such event" }, 404);
+  const ids = [...event.collectionIds];
+  // Even a historical event without photos needs an archive record for recovery.
+  if (!ids.length) {
+    const id = crypto.randomUUID();
+    const record: CollectionRecord = { id, name: event.name, description: null, coverPhotoId: null,
+      createdBy: userId, createdAt: Date.now(), showcaseEventId: event.id };
+    await writeJson(env.PHOTOS, collectionKey(id), record);
+    ids.push(id);
+  }
+  const groups: string[] = [];
+  try {
+    for (const collectionId of ids) {
+      const result = await trashEvent(env, { collectionId, userId, showcaseEventId: event.id });
+      groups.push(result.groupId);
+    }
+    const key = `site/recent-events/${event.id}`;
+    const previous = await readJson<Record<string, unknown>>(env.PHOTOS, key);
+    await writeJson(env.PHOTOS, key, { ...previous, recent: event.recent, deleted: true });
+  } catch {
+    // Restore completed albums if a later move fails. Any failed recovery remains in the bin.
+    await Promise.allSettled(groups.map((id) => restoreFromBin(env, id)));
+    return json({ error: "Could not finish deleting the event. Refresh the list and check the recycle bin before retrying." }, 500);
+  }
+  return json({ groupIds: groups });
+}
+
+async function setRecentEvent(request: Request, env: MediaEnv, userId: string): Promise<Response> {
+  let body: { id?: unknown; recent?: unknown } | null;
+  try { body = await request.json() as typeof body; } catch { return json({ error: "Malformed body" }, 400); }
+  if (!body || typeof body.id !== "string" || typeof body.recent !== "boolean") return json({ error: "An event and a boolean recent setting are required" }, 400);
+  const event = (await readShowcase(env)).find((e) => e.id === body.id);
+  if (!event) return json({ error: "No such event" }, 404);
+  if (body.recent && !event.collectionIds.length) {
+    const cid = crypto.randomUUID();
+    const record: CollectionRecord = { id: cid, name: event.name, description: null, coverPhotoId: null,
+      createdBy: userId, createdAt: Date.now(), showcaseEventId: event.id };
+    await writeJson(env.PHOTOS, collectionKey(cid), record);
+    await writeJson(env.PHOTOS, `site/recent-events/${event.id}`, { recent: true });
+  } else {
+    const previous = await readJson<Record<string, unknown>>(env.PHOTOS, `site/recent-events/${event.id}`);
+    await writeJson(env.PHOTOS, `site/recent-events/${event.id}`, { ...previous, recent: body.recent });
+  }
+  return json({ events: await readShowcase(env) });
+}
+
 async function readRenames(env: MediaEnv): Promise<Record<string, string>> {
   const stored = await readJson<{ renames?: Record<string, string> }>(env.PHOTOS, PAST_EVENTS_KEY);
   const known = new Set(pastEvents.map((e) => e.id));
@@ -546,14 +641,21 @@ async function renamePastEvent(request: Request, env: MediaEnv): Promise<Respons
   } catch {
     return json({ error: "Malformed body" }, 400);
   }
-  const event = pastEvents.find((e) => e.id === body.id);
+  if (!body || typeof body.id !== "string") return json({ error: "No such event" }, 404);
+  const event = (await readShowcase(env)).find((e) => e.id === body.id);
   if (!event) return json({ error: "No such event" }, 404);
   const title = typeof body.title === "string" ? body.title.replace(/\s+/g, " ").trim() : "";
   if (title.length < 2 || title.length > 120) {
     return json({ error: "Use a name between 2 and 120 characters" }, 400);
   }
+  if (isSafeId(event.id)) {
+    const record = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(event.id));
+    if (!record) return json({ error: "No such event" }, 404);
+    await writeJson(env.PHOTOS, collectionKey(record.id), { ...record, name: title });
+    return json({ renames: await readRenames(env) });
+  }
   const renames = await readRenames(env);
-  if (title === eventTitle(event)) delete renames[event.id];
+  if (title === eventTitle(pastEvents.find((e) => e.id === event.id)!)) delete renames[event.id];
   else renames[event.id] = title;
   await writeJson(env.PHOTOS, PAST_EVENTS_KEY, { renames });
   return json({ renames });
@@ -667,23 +769,26 @@ async function createCollection(
   env: MediaEnv,
   userId: string,
 ): Promise<Response> {
-  let body: { name?: string; description?: string };
+  let body: { name?: unknown; description?: unknown; recent?: unknown } | null;
   try {
     body = (await request.json()) as typeof body;
   } catch {
     return json({ error: "Malformed body" }, 400);
   }
-  const name = (body.name ?? "").trim();
+  if (!body || typeof body.name !== "string" || (body.recent !== undefined && typeof body.recent !== "boolean")) return json({ error: "Invalid event details" }, 400);
+  const name = body.name.trim();
   if (!name) return json({ error: "A collection needs a name" }, 400);
 
   const record: CollectionRecord = {
     id: crypto.randomUUID(),
     name: name.slice(0, 120),
-    description: (body.description ?? "").trim().slice(0, 400) || null,
+    description: typeof body.description === "string" ? body.description.trim().slice(0, 400) || null : null,
     coverPhotoId: null,
     createdBy: userId,
     createdAt: Date.now(),
   };
+  record.showcaseEventId = record.id;
+  record.recent = body.recent !== false;
   await writeJson(env.PHOTOS, collectionKey(record.id), record);
   return json(record, 201);
 }

@@ -546,6 +546,8 @@ export const BIN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAX_TRASH_BATCH = 100;
 
 export type BinGroup = {
+  /** Home-page event hidden when these albums were deleted together. */
+  showcaseEventId?: string;
   id: string;
   kind: "photos" | "event";
   collectionId: string;
@@ -702,7 +704,7 @@ export async function trashPhotos(
 /** Moves a whole event to the bin in one step. Only its record moves. */
 export async function trashEvent(
   env: MediaEnv,
-  args: { collectionId: string; userId: string; now?: number },
+  args: { collectionId: string; userId: string; now?: number; showcaseEventId?: string },
 ): Promise<{ groupId: string; photoCount: number }> {
   const cid = args.collectionId;
   const now = args.now ?? Date.now();
@@ -713,6 +715,7 @@ export async function trashEvent(
   const group: BinGroup = {
     id: newBinId(now),
     kind: "event",
+    ...(args.showcaseEventId ? { showcaseEventId: args.showcaseEventId } : {}),
     collectionId: cid,
     collectionName: record.name ?? "Event",
     photoIds: [],
@@ -791,6 +794,11 @@ export async function restoreFromBin(
       await env.PHOTOS.delete(trashCollectionKey(cid));
     } else if (!(await env.PHOTOS.head(collectionRecordKey(cid)))) {
       throw new BinError(`"${group.collectionName}" cannot be restored because its record is missing`, 409);
+    }
+    if (group.showcaseEventId) {
+      const key = `site/recent-events/${group.showcaseEventId}`;
+      const setting = await readRecord<Record<string, unknown>>(env.PHOTOS, key);
+      await writeRecord(env.PHOTOS, key, { ...setting, deleted: false });
     }
     await env.PHOTOS.delete(trashGroupKey(group.id));
     return { restored: group.photoCount, remaining: 0, collectionId: cid };

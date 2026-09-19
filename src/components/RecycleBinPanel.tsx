@@ -25,7 +25,7 @@ export function RecycleBinPanel() {
 
   // Anything that changes the bin can change an event's photos and counts too.
   const refresh = () => {
-    for (const queryKey of [["bin"], ["collections"], ["photos"]]) qc.invalidateQueries({ queryKey });
+    for (const queryKey of [["bin"], ["collections"], ["photos"], ["showcase-events"], ["recent-collections"], ["export-collections"]]) qc.invalidateQueries({ queryKey });
   };
 
   const restore = useMutation({

@@ -59,6 +59,9 @@ export type VayamEvent = {
   year?: string;
 };
 
+export const LEGACY_RECENT_EVENT_ID = "ttpoc-carreer-nexus-3";
+export type ShowcaseEvent = VayamEvent & { recent: boolean; collectionIds: string[] };
+
 /**
  * Work the studio has run, in the order the team gave. The order is theirs and
  * is not sorted or grouped, because it is how they present themselves.
