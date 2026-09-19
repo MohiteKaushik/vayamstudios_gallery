@@ -201,3 +201,23 @@ do {
 assert.deepEqual(matches.map((p) => p.fileName), ["DSC_0082.JPG"]);
 assert.equal((await request(`collections/${first.id}/photos?filename=${"x".repeat(201)}`)).status, 400);
 console.log("Hide/unhide: admin-only controls, member list and direct gallery/scan exclusion, multiple albums, preserved photos/recent setting. Filename search: case-insensitive partial matches beyond the first 80 photos, empty-page cursors, authorization and validation passed.");
+
+const multiDay = await (await request("collections", "POST", { name: "Multi-day summit", recent: true })).json() as { id: string };
+assert.equal((await request("collections", "POST", { eventId: multiDay.id, name: "Day 1" }, memberToken)).status, 403);
+assert.equal((await request("collections", "POST", { eventId: "missing-event", name: "Day 1" })).status, 404);
+const dayOneResponse = await request("collections", "POST", { eventId: multiDay.id, name: "Day 1", description: "Opening day" });
+assert.equal(dayOneResponse.status, 201);
+const dayOne = await dayOneResponse.json() as { id: string; showcaseEventId: string };
+assert.equal(dayOne.showcaseEventId, multiDay.id);
+assert.equal((records.get(`meta/collection/${multiDay.id}`) as { containerOnly?: boolean }).containerOnly, true,
+  "An empty starter album becomes the event container");
+assert.deepEqual((await eventAlbums(multiDay.id)).collections.map((c) => c.id), [dayOne.id],
+  "Members see the subfolder, not the empty container");
+assert.equal((await request("collections", "POST", { eventId: multiDay.id, name: " day 1 " })).status, 409);
+const dayTwo = await (await request("collections", "POST", { eventId: multiDay.id, name: "Day 2" })).json() as { id: string };
+assert.deepEqual((await eventAlbums(multiDay.id)).collections.map((c) => c.id).sort(), [dayOne.id, dayTwo.id].sort());
+const multiDayGroups = await remove(multiDay.id);
+assert.equal(multiDayGroups.length, 3, "Deleting an event includes its hidden container and both subfolders");
+for (const group of multiDayGroups) await restoreFromBin(env, group);
+assert.deepEqual((await eventAlbums(multiDay.id)).collections.map((c) => c.id).sort(), [dayOne.id, dayTwo.id].sort());
+console.log("Event subfolders: admin authorization, parent validation, duplicate names, empty-root conversion, member listing, deletion and restoration passed.");

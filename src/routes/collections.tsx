@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
-import { Check, CheckCheck, ChevronLeft, Copy, Image as ImageIcon, ImagePlus, Layers, Loader2, Pencil, Plus, Radio, RefreshCw, ScanFace, Search, Trash2, X } from "lucide-react";
+import { Check, CheckCheck, ChevronLeft, Copy, FolderPlus, Image as ImageIcon, ImagePlus, Layers, Loader2, Pencil, Plus, Radio, RefreshCw, ScanFace, Search, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
@@ -20,6 +20,7 @@ import { DuplicatesPanel } from "@/components/DuplicatesPanel";
 import { dayLabel, timeLabel } from "@/lib/time";
 import { useIsAdmin } from "@/lib/roles";
 import { confirmEventDeletion } from "@/lib/confirm-event-deletion";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const PHOTO_PAGE_SIZE = 40;
 
@@ -68,10 +69,18 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
     enabled: event !== undefined,
     retry: false,
   });
+  const showcase = useQuery({
+    queryKey: ["showcase-events"],
+    queryFn: api.showcaseEvents,
+    enabled: event === undefined,
+    retry: false,
+  });
   const listing = event !== undefined ? eventCollections : collections;
   const albums = event !== undefined ? eventCollections.data?.collections : collections.data;
   const eventName = eventCollections.data?.event.name;
-  const selectedAlbum = shared ?? (event !== undefined && albums?.length === 1 ? albums[0]?.id : undefined);
+  const selectedAlbum = shared;
+  const topLevelEvents = (showcase.data ?? []).filter((item) =>
+    isAdmin && showAll ? true : item.recent && !item.hidden);
 
   const create = useMutation({
     mutationFn: () => api.createCollection(name.trim(), description.trim() || undefined),
@@ -81,7 +90,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
       qc.invalidateQueries({ queryKey: ["collections"] });
       qc.invalidateQueries({ queryKey: ["showcase-events"] });
       qc.invalidateQueries({ queryKey: ["recent-collections"] });
-      navigate({ to: ".", search: { shared: created.id } });
+      navigate({ to: ".", search: { event: created.id, shared: undefined } });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Could not create the collection"),
   });
@@ -94,7 +103,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
       qc.invalidateQueries({ queryKey: ["showcase-events"] });
       qc.invalidateQueries({ queryKey: ["recent-collections"] });
       const groupId = r.groupId;
-      toast.success("Event moved to the recycle bin", {
+      toast.success("Subfolder moved to the recycle bin", {
         description: "Restore it from the recycle bin in the admin console for 30 days.",
         ...(groupId ? { action: { label: "Undo", onClick: () => void undoFromBin(qc, groupId) } } : {}),
       });
@@ -117,7 +126,8 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
 
   if (selectedAlbum) {
     const current = albums?.find((c) => c.id === selectedAlbum);
-    const backToEvent = event !== undefined && (albums?.length ?? 0) > 1;
+    const backToEvent = event !== undefined;
+    const selectedEventId = event ?? current?.showcaseEventId;
     return (
       <AppShell wide>
         <button
@@ -127,7 +137,8 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
           <ChevronLeft className="size-4" /> {backToEvent ? eventName : "Recent Events"}
         </button>
         {isAdmin ? (
-          <AdminCollection key={selectedAlbum} collectionId={selectedAlbum} name={current?.name ?? "Collection"} />
+          <AdminCollection key={selectedAlbum} collectionId={selectedAlbum} name={current?.name ?? "Collection"}
+            {...(selectedEventId ? { eventId: selectedEventId } : {})} />
         ) : (
           <MemberCollection key={selectedAlbum} collectionId={selectedAlbum} name={current?.name ?? "Collection"} />
         )}
@@ -144,9 +155,12 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
         className="mb-5 inline-flex items-center gap-1 text-sm text-muted-foreground">
         <ChevronLeft className="size-4" /> Recent Events
       </button>}
-      <h1 className="break-words text-3xl font-semibold tracking-[-0.03em]">{eventName ?? "Recent Events"}</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="break-words text-3xl font-semibold tracking-[-0.03em]">{eventName ?? "Recent Events"}</h1>
+        {isAdmin && event !== undefined && <SubfolderDialog eventId={event} />}
+      </div>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-        {event !== undefined ? "Event albums" : isAdmin
+        {event !== undefined ? "Select a subfolder to open its photos." : isAdmin
           ? "Create an event, then add the photos to it. Every face is indexed once so members can find themselves."
           : "Open an event and tap Find me. Only the photos that match your reference face appear."}
       </p>
@@ -191,18 +205,58 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
           <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} className="size-4" />
           Show all events (admin)
         </label>}
-        {listing.isLoading ? (
+        {listing.isLoading || (event === undefined && showcase.isLoading) ? (
           <Shimmer className="h-40" />
-        ) : listing.isError ? (
+        ) : listing.isError || (event === undefined && showcase.isError) ? (
           <EmptyState
             tone="error"
             icon={<Layers className="size-7" strokeWidth={1.5} />}
             title="No events available"
             description={
-              listing.error instanceof Error ? listing.error.message : "Could not load the events."
+              listing.error instanceof Error ? listing.error.message
+                : showcase.error instanceof Error ? showcase.error.message
+                  : "Could not load the events."
             }
           />
-        ) : albums?.length ? (
+        ) : event === undefined && topLevelEvents.length ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {topLevelEvents.map((item) => {
+              const folders = (albums ?? []).filter((album) => album.showcaseEventId === item.id);
+              const cover = folders.find((folder) => folder.coverUrl)?.coverUrl;
+              const photoCount = folders.reduce((total, folder) => total + folder.photoCount, 0);
+              return (
+                <GlassCard
+                  key={item.id}
+                  interactive
+                  aria-label={`Open ${item.name} subfolders`}
+                  onClick={() => navigate({ to: ".", search: { event: item.id, shared: undefined } })}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                      e.preventDefault();
+                      navigate({ to: ".", search: { event: item.id, shared: undefined } });
+                    }
+                  }}
+                  className="group overflow-hidden"
+                >
+                  <div className="flex aspect-[16/10] items-center justify-center overflow-hidden bg-secondary">
+                    {cover
+                      ? <img src={cover} alt="" loading="lazy"
+                          className="size-full object-cover transition-transform duration-500 group-hover:scale-[1.03]" />
+                      : <Layers className="size-10 text-muted-foreground" strokeWidth={1.4} />}
+                  </div>
+                  <div className="px-5 py-4">
+                    <p className="truncate font-medium tracking-[-0.01em]">{item.name}</p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {formatCount(item.collectionIds.length, "subfolder")} · {formatCount(photoCount, "photo")}
+                    </p>
+                  </div>
+                </GlassCard>
+              );
+            })}
+          </div>
+        ) : event !== undefined && albums?.length ? (
           <div className="grid gap-3 sm:grid-cols-2">
             {albums.map((c) => (
               <GlassCard
@@ -259,9 +313,11 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
         ) : (
           <EmptyState
             icon={<Layers className="size-7" strokeWidth={1.5} />}
-            title={event !== undefined ? "No photos yet" : "No events yet"}
+            title={event !== undefined ? "No subfolders yet" : "No events yet"}
             description={
-              event !== undefined ? "Photos have not been published for this event yet." : isAdmin
+              event !== undefined
+                ? isAdmin ? "Create the first subfolder for this event." : "No photo folders have been published for this event yet."
+                : isAdmin
                 ? "Create one above, then add the photos to it."
                 : "Nothing has been published yet. New events will show up here."
             }
@@ -331,9 +387,104 @@ function PhotoPageLoader({
   );
 }
 
+function SubfolderDialog({ eventId, compact = false }: { eventId: string; compact?: boolean }) {
+  const navigate = Route.useNavigate();
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const create = useMutation({
+    mutationFn: () => api.createEventSubfolder(eventId, name.trim(), description.trim() || undefined),
+    onSuccess: (folder) => {
+      setOpen(false);
+      setName("");
+      setDescription("");
+      for (const key of [["collections"], ["collections", "event", eventId], ["showcase-events"], ["recent-collections"]]) {
+        void qc.invalidateQueries({ queryKey: key });
+      }
+      toast.success("Subfolder created");
+      void navigate({ to: ".", search: { event: eventId, shared: folder.id } });
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : "Could not create the subfolder"),
+  });
+
+  return (
+    <>
+      <GlassButton
+        variant={compact ? "quiet" : "primary"}
+        size={compact ? "sm" : "md"}
+        icon={<FolderPlus className="size-4" />}
+        onClick={() => setOpen(true)}
+      >
+        Add subfolder
+      </GlassButton>
+      <Dialog open={open} onOpenChange={(next) => { if (!create.isPending) setOpen(next); }}>
+        <DialogContent className="w-[calc(100%-2rem)] max-w-md rounded-lg">
+          <DialogHeader className="pr-6 text-left">
+            <DialogTitle>New event subfolder</DialogTitle>
+            <DialogDescription>
+              Create a separate photo folder, such as Day 1 or Day 2.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (name.trim().length >= 2) create.mutate();
+            }}
+          >
+            <label className="block text-sm">
+              <span className="mb-1.5 block text-muted-foreground">Subfolder name</span>
+              <input
+                autoFocus
+                required
+                minLength={2}
+                maxLength={120}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Day 1"
+                className="h-11 w-full rounded-lg border border-hairline bg-secondary px-3"
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1.5 block text-muted-foreground">Description (optional)</span>
+              <input
+                maxLength={400}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Opening day"
+                className="h-11 w-full rounded-lg border border-hairline bg-secondary px-3"
+              />
+            </label>
+            <div className="flex justify-end gap-2 pt-2">
+              <GlassButton
+                type="button"
+                variant="ghost"
+                disabled={create.isPending}
+                onClick={() => setOpen(false)}
+              >
+                Cancel
+              </GlassButton>
+              <GlassButton
+                type="submit"
+                loading={create.isPending}
+                disabled={name.trim().length < 2}
+                icon={<FolderPlus className="size-4" />}
+              >
+                Create subfolder
+              </GlassButton>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 /* ------------------------------- Admin view ------------------------------- */
 
-function AdminCollection({ collectionId, name }: { collectionId: string; name: string }) {
+function AdminCollection({ collectionId, name, eventId }: { collectionId: string; name: string; eventId?: string }) {
   const { ask, dialog } = useConfirm();
   const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -559,6 +710,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
           }}
         />
         <div className="flex flex-wrap items-center gap-2">
+          {eventId && <SubfolderDialog eventId={eventId} compact />}
           <GlassButton
             variant={showDuplicates ? "quiet" : "ghost"}
             icon={<Copy className="size-4" />}

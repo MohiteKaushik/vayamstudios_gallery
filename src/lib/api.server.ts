@@ -84,6 +84,8 @@ export type CollectionRecord = {
   createdAt: number;
   showcaseEventId?: string;
   recent?: boolean;
+  /** Keeps an event alive without exposing its empty starter album. */
+  containerOnly?: boolean;
 };
 
 export type ScanHit = {
@@ -486,6 +488,7 @@ async function collectionRecords(env: MediaEnv): Promise<CollectionRecord[]> {
 async function listCollections(env: MediaEnv, recentOnly = false, eventId: string | null = null, isAdmin = false): Promise<Response> {
   let records = await collectionRecords(env);
   const events = (await readShowcase(env, records)).filter((event) => isAdmin || !event.hidden);
+  records = records.filter((record) => !record.containerOnly);
   if (!isAdmin) {
     const visibleIds = new Set(events.flatMap((event) => event.collectionIds));
     records = records.filter((record) => visibleIds.has(record.id));
@@ -509,6 +512,7 @@ async function listCollections(env: MediaEnv, recentOnly = false, eventId: strin
       const cover = c.coverPhotoId ?? (await firstPhotoId(env.PHOTOS, c.id));
       return {
         ...c,
+        showcaseEventId: c.showcaseEventId ?? LEGACY_RECENT_EVENT_ID,
         coverPhotoId: cover,
         photoCount: await countPhotos(env.PHOTOS, c.id),
         coverUrl: cover ? mediaUrl(c.id, cover, "t") : null,
@@ -598,7 +602,9 @@ async function readShowcase(env: MediaEnv, records?: CollectionRecord[]): Promis
       hidden: setting?.hidden === true,
       recent: typeof setting?.recent === "boolean" ? setting.recent : event.recent,
       // Existing day albums belonged to TTPOC before event associations existed.
-      collectionIds: collections.filter((c) => (c.showcaseEventId ?? LEGACY_RECENT_EVENT_ID) === event.id).map((c) => c.id),
+      collectionIds: collections
+        .filter((c) => !c.containerOnly && (c.showcaseEventId ?? LEGACY_RECENT_EVENT_ID) === event.id)
+        .map((c) => c.id),
     };
   });
   return resolved.filter((event) => !event.deleted).map(({ deleted: _deleted, ...event }) => event);
@@ -623,7 +629,7 @@ async function publicEventShare(request: Request, env: MediaEnv, url: URL, parts
   }
   if (!cid || !isSafeId(cid)) return missing();
   const album = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(cid));
-  if (!album || (album.showcaseEventId ?? LEGACY_RECENT_EVENT_ID) !== link.eventId) return missing();
+  if (!album || album.containerOnly || (album.showcaseEventId ?? LEGACY_RECENT_EVENT_ID) !== link.eventId) return missing();
   if (action === "photos" && parts.length === 3) {
     const page = await env.PHOTOS.list({ prefix: `meta/photo/${cid}/`, limit: 40,
       ...(url.searchParams.get("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}) });
@@ -671,7 +677,11 @@ async function deleteShowcaseEvent(request: Request, env: MediaEnv, userId: stri
   if (!body || typeof body.id !== "string" || body.confirmed !== true) return json({ error: "Confirm the event deletion first" }, 400);
   const event = (await readShowcase(env)).find((e) => e.id === body.id);
   if (!event) return json({ error: "No such event" }, 404);
-  const ids = [...event.collectionIds];
+  // Include an internal custom-event container as well as its visible albums.
+  // The container is hidden from galleries but must move with the whole event.
+  const ids = (await collectionRecords(env))
+    .filter((record) => (record.showcaseEventId ?? LEGACY_RECENT_EVENT_ID) === event.id)
+    .map((record) => record.id);
   // Even a historical event without photos needs an archive record for recovery.
   if (!ids.length) {
     const id = crypto.randomUUID();
@@ -866,15 +876,33 @@ async function createCollection(
   env: MediaEnv,
   userId: string,
 ): Promise<Response> {
-  let body: { name?: unknown; description?: unknown; recent?: unknown } | null;
+  let body: { name?: unknown; description?: unknown; recent?: unknown; eventId?: unknown } | null;
   try {
     body = (await request.json()) as typeof body;
   } catch {
     return json({ error: "Malformed body" }, 400);
   }
-  if (!body || typeof body.name !== "string" || (body.recent !== undefined && typeof body.recent !== "boolean")) return json({ error: "Invalid event details" }, 400);
+  if (!body || typeof body.name !== "string"
+    || (body.recent !== undefined && typeof body.recent !== "boolean")
+    || (body.eventId !== undefined && typeof body.eventId !== "string")) {
+    return json({ error: "Invalid event details" }, 400);
+  }
   const name = body.name.trim();
   if (!name) return json({ error: "A collection needs a name" }, 400);
+
+  const eventId = typeof body.eventId === "string" ? body.eventId.trim() : null;
+  if (body.eventId !== undefined && !eventId) return json({ error: "Choose an event for this subfolder" }, 400);
+  let collections: CollectionRecord[] = [];
+  if (eventId) {
+    collections = await collectionRecords(env);
+    const event = (await readShowcase(env, collections)).find((candidate) => candidate.id === eventId);
+    if (!event) return json({ error: "This event is no longer available" }, 404);
+    const duplicate = collections.some((collection) =>
+      !collection.containerOnly
+      && (collection.showcaseEventId ?? LEGACY_RECENT_EVENT_ID) === eventId
+      && collection.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase());
+    if (duplicate) return json({ error: "That subfolder already exists in this event" }, 409);
+  }
 
   const record: CollectionRecord = {
     id: crypto.randomUUID(),
@@ -884,9 +912,20 @@ async function createCollection(
     createdBy: userId,
     createdAt: Date.now(),
   };
-  record.showcaseEventId = record.id;
-  record.recent = body.recent !== false;
+  record.showcaseEventId = eventId ?? record.id;
+  if (!eventId) record.recent = body.recent !== false;
   await writeJson(env.PHOTOS, collectionKey(record.id), record);
+
+  // A newly created custom event starts as an empty album. On its first
+  // subfolder, turn that starter into the event container so members see only
+  // useful folders such as Day 1 and Day 2.
+  if (eventId) {
+    const root = collections.find((collection) =>
+      collection.id === eventId && collection.showcaseEventId === eventId && !collection.containerOnly);
+    if (root && await countPhotos(env.PHOTOS, root.id) === 0) {
+      await writeJson(env.PHOTOS, collectionKey(root.id), { ...root, containerOnly: true });
+    }
+  }
   return json(record, 201);
 }
 

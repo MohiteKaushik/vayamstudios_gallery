@@ -18,6 +18,7 @@ export type Collection = {
   photoCount: number;
   createdBy: string;
   createdAt: number;
+  showcaseEventId?: string;
 };
 
 export type Photo = {
@@ -197,6 +198,11 @@ export const api = {
     call<Collection>("/api/collections", {
       method: "POST",
       body: JSON.stringify({ name, description, recent }),
+    }),
+  createEventSubfolder: (eventId: string, name: string, description?: string) =>
+    call<Collection>("/api/collections", {
+      method: "POST",
+      body: JSON.stringify({ eventId, name, description }),
     }),
 
   listPhotos: (collectionId: string, cursor?: string, limit = 40, filename = "") =>
