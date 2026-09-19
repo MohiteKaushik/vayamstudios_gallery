@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
-import { Check, CheckCheck, ChevronLeft, Copy, Image as ImageIcon, ImagePlus, Layers, Loader2, Pencil, Plus, Radio, RefreshCw, ScanFace, Trash2, X } from "lucide-react";
+import { Check, CheckCheck, ChevronLeft, Copy, Image as ImageIcon, ImagePlus, Layers, Loader2, Pencil, Plus, Radio, RefreshCw, ScanFace, Search, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
@@ -273,11 +273,11 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-function useInfinitePhotos(collectionId: string) {
+function useInfinitePhotos(collectionId: string, filename = "") {
   return useInfiniteQuery({
-    queryKey: ["photos", collectionId],
+    queryKey: filename ? ["photos", collectionId, "filename", filename] : ["photos", collectionId],
     initialPageParam: undefined as string | undefined,
-    queryFn: ({ pageParam }) => api.listPhotos(collectionId, pageParam, PHOTO_PAGE_SIZE),
+    queryFn: ({ pageParam }) => api.listPhotos(collectionId, pageParam, PHOTO_PAGE_SIZE, filename),
     getNextPageParam: (lastPage) => lastPage.cursor,
     retry: false,
   });
@@ -348,7 +348,13 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [showDuplicates, setShowDuplicates] = useState(false);
 
-  const photos = useInfinitePhotos(collectionId);
+  const [filenameDraft, setFilenameDraft] = useState("");
+  const [filename, setFilename] = useState("");
+  const photos = useInfinitePhotos(collectionId, filename);
+  // An empty storage page is not a complete search; continue through every cursor.
+  useEffect(() => {
+    if (filename && photos.hasNextPage && !photos.isFetching && !photos.isError) void photos.fetchNextPage();
+  }, [filename, photos.hasNextPage, photos.isFetching, photos.isError, photos.fetchNextPage]);
 
   const removeSelected = useMutation({
     // A selection goes to the recycle bin in slices, because moving a photo is
@@ -537,8 +543,8 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
               : photos.isError
                 ? "Photos could not be loaded"
                 : photos.hasNextPage
-                  ? "Event photos"
-                  : formatCount(list.length, "photo")}
+                  ? filename ? "Searching event..." : "Event photos"
+                  : filename ? `${formatCount(list.length, "matching photo")}` : formatCount(list.length, "photo")}
           </p>
         </div>
         <input
@@ -589,6 +595,26 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
           </GlassButton>
         </div>
       </div>
+
+      <form className="mb-6 flex flex-wrap items-center gap-2" onSubmit={(e) => {
+        e.preventDefault();
+        setSelected(new Set()); setOpen(null); setShowDuplicates(false);
+        setFilename(filenameDraft.trim());
+      }}>
+        <div className="relative min-w-0 flex-1 basis-52">
+          <Search className="pointer-events-none absolute left-3 top-3 size-5 text-muted-foreground" />
+          <input type="search" aria-label="Search photo filename" placeholder="Photo filename" maxLength={200}
+            value={filenameDraft} onChange={(e) => setFilenameDraft(e.target.value)}
+            className="h-11 w-full rounded-lg border border-hairline bg-secondary pl-10 pr-3 text-sm" />
+        </div>
+        <GlassButton type="submit" variant="quiet" icon={<Search className="size-4" />} disabled={!filenameDraft.trim()}>Search</GlassButton>
+        {filename && <GlassButton type="button" variant="ghost" icon={<X className="size-4" />} onClick={() => {
+          setFilename(""); setFilenameDraft(""); setSelected(new Set()); setOpen(null);
+        }}>Clear</GlassButton>}
+      </form>
+      {filename && photos.hasNextPage && !photos.isError && <p role="status" className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" /> Searching all event photos...
+      </p>}
 
       {/* Appears only with a selection, so the default view stays uncluttered. */}
       {selected.size > 0 && (
@@ -691,11 +717,13 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
             </GlassButton>
           }
         />
+      ) : filename && photos.hasNextPage && !list.length ? (
+        <PhotoGridSkeleton count={4} />
       ) : list.length === 0 && !progress ? (
         <EmptyState
           icon={<ImagePlus className="size-7" strokeWidth={1.5} />}
-          title="No photos yet"
-          description="Add photos and every face in them will be indexed for member scans."
+          title={filename ? "No matching photos" : "No photos yet"}
+          description={filename ? `No uploaded filename contains "${filename}".` : "Add photos and every face in them will be indexed for member scans."}
         />
       ) : (
         // Newest first, in the batches they were uploaded in, so a whole upload
@@ -729,6 +757,7 @@ function AdminCollection({ collectionId, name }: { collectionId: string; name: s
                     onOpen={(i) => setOpen(batch.offset + i)}
                     selected={selected}
                     onToggleSelect={toggleOne}
+                    showFileNames={!!filename}
                   />
                 </section>
               );

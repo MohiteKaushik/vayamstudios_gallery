@@ -330,13 +330,14 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
   const isAdmin = member.role === "admin";
 
   if (head === "collections") {
-    if (rest.length === 0 && request.method === "GET") return listCollections(env, url.searchParams.get("recent") === "1", url.searchParams.get("event"));
+    if (rest.length === 0 && request.method === "GET") return listCollections(env, url.searchParams.get("recent") === "1", url.searchParams.get("event"), isAdmin);
     if (rest.length === 0 && request.method === "POST") {
       if (!isAdmin) return json({ error: "Admins only" }, 403);
       return createCollection(request, env, userId);
     }
     const cid = rest[0] ?? "";
     if (!isSafeId(cid)) return json({ error: "Unknown collection" }, 400);
+    if (!isAdmin && await collectionHidden(env, cid)) return json({ error: "This event is not available" }, 404);
     if (rest.length === 1 && request.method === "PATCH") {
       if (!isAdmin) return json({ error: "Admins only" }, 403);
       return renameCollection(request, env, cid);
@@ -351,7 +352,10 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
       if (!(await env.PHOTOS.head(collectionKey(cid)))) {
         return json({ error: "This event is not available" }, 404);
       }
-      return listPhotos(env, cid, url.searchParams.get("cursor"), url.searchParams.get("limit"));
+      const filename = url.searchParams.get("filename")?.trim() ?? "";
+      if (filename && !isAdmin) return json({ error: "Admins only" }, 403);
+      if (filename.length > 200) return json({ error: "Use a shorter filename" }, 400);
+      return listPhotos(env, cid, url.searchParams.get("cursor"), url.searchParams.get("limit"), filename);
     }
     if (rest[1] === "status" && request.method === "GET") {
       return json(await collectionStatus(env, cid));
@@ -372,9 +376,10 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
   }
 
   if (head === "site" && rest[0] === "events") {
-    if (request.method === "GET") return json({ events: await readShowcase(env) });
+    if (request.method === "GET") return json({ events: (await readShowcase(env)).filter((event) => isAdmin || !event.hidden) });
     if (!isAdmin) return json({ error: "Admins only" }, 403);
     if (request.method === "PATCH") return setRecentEvent(request, env, userId);
+    if (request.method === "PUT") return setEventHidden(request, env);
     if (request.method === "DELETE") return deleteShowcaseEvent(request, env, userId);
     return json({ error: "Method not allowed" }, 405);
   }
@@ -387,7 +392,7 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
   }
 
   if (head === "site" && rest[0] === "cover") {
-    if (request.method === "GET") return json(await readHomeCover(env));
+    if (request.method === "GET") return json(await readHomeCover(env, isAdmin));
     if (!isAdmin) return json({ error: "Admins only" }, 403);
     if (request.method === "PUT") return setHomeCover(request, env);
     if (request.method === "DELETE") {
@@ -426,6 +431,7 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
     if (request.method === "POST") return runScan(request, env, userId);
     const cid = rest[0] ?? "";
     if (request.method === "GET" && isSafeId(cid)) {
+      if (!isAdmin && await collectionHidden(env, cid)) return json({ error: "This event is not available" }, 404);
       const cached = await readJson<ScanRecord>(env.PHOTOS, scanKey(userId, cid));
       const current = cached?.matcher === MATCHER_VERSION ? cached : null;
       const empty = { hits: [], possible: [], scannedAt: 0, facesSearched: 0 };
@@ -461,16 +467,21 @@ async function collectionRecords(env: MediaEnv): Promise<CollectionRecord[]> {
   return records.filter((r): r is CollectionRecord => r !== null);
 }
 
-async function listCollections(env: MediaEnv, recentOnly = false, eventId: string | null = null): Promise<Response> {
+async function listCollections(env: MediaEnv, recentOnly = false, eventId: string | null = null, isAdmin = false): Promise<Response> {
   let records = await collectionRecords(env);
+  const events = (await readShowcase(env, records)).filter((event) => isAdmin || !event.hidden);
+  if (!isAdmin) {
+    const visibleIds = new Set(events.flatMap((event) => event.collectionIds));
+    records = records.filter((record) => visibleIds.has(record.id));
+  }
   let selectedEvent: ShowcaseEvent | undefined;
   if (eventId !== null) {
-    selectedEvent = (await readShowcase(env, records)).find((event) => event.id === eventId);
+    selectedEvent = events.find((event) => event.id === eventId);
     if (!selectedEvent) return json({ error: "This event is no longer available" }, 404);
     const ids = new Set(selectedEvent.collectionIds);
     records = records.filter((record) => ids.has(record.id));
   } else if (recentOnly) {
-    const ids = new Set((await readShowcase(env, records)).filter((event) => event.recent).flatMap((event) => event.collectionIds));
+    const ids = new Set(events.filter((event) => event.recent && !event.hidden).flatMap((event) => event.collectionIds));
     records = records.filter((record) => ids.has(record.id));
   }
 
@@ -564,16 +575,36 @@ async function readShowcase(env: MediaEnv, records?: CollectionRecord[]): Promis
     }),
   ];
   const resolved = await mapLimit(events, READ_CONCURRENCY, async (event) => {
-    const setting = await readJson<{ recent?: boolean; deleted?: boolean }>(env.PHOTOS, `site/recent-events/${event.id}`);
+    const setting = await readJson<{ recent?: boolean; deleted?: boolean; hidden?: boolean }>(env.PHOTOS, `site/recent-events/${event.id}`);
     return {
       ...event,
       deleted: setting?.deleted === true,
+      hidden: setting?.hidden === true,
       recent: typeof setting?.recent === "boolean" ? setting.recent : event.recent,
       // Existing day albums belonged to TTPOC before event associations existed.
       collectionIds: collections.filter((c) => (c.showcaseEventId ?? LEGACY_RECENT_EVENT_ID) === event.id).map((c) => c.id),
     };
   });
   return resolved.filter((event) => !event.deleted).map(({ deleted: _deleted, ...event }) => event);
+}
+
+async function collectionHidden(env: MediaEnv, cid: string): Promise<boolean> {
+  const record = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(cid));
+  if (!record) return false;
+  const setting = await readJson<{ hidden?: boolean; deleted?: boolean }>(env.PHOTOS,
+    `site/recent-events/${record.showcaseEventId ?? LEGACY_RECENT_EVENT_ID}`);
+  return setting?.hidden === true || setting?.deleted === true;
+}
+
+async function setEventHidden(request: Request, env: MediaEnv): Promise<Response> {
+  let body: { id?: unknown; hidden?: unknown } | null;
+  try { body = await request.json() as typeof body; } catch { return json({ error: "Malformed body" }, 400); }
+  if (!body || typeof body.id !== "string" || typeof body.hidden !== "boolean") return json({ error: "An event and visibility setting are required" }, 400);
+  if (!(await readShowcase(env)).some((event) => event.id === body.id)) return json({ error: "No such event" }, 404);
+  const key = `site/recent-events/${body.id}`;
+  const setting = await readJson<Record<string, unknown>>(env.PHOTOS, key);
+  await writeJson(env.PHOTOS, key, { ...setting, hidden: body.hidden });
+  return json({ events: await readShowcase(env) });
 }
 
 async function deleteShowcaseEvent(request: Request, env: MediaEnv, userId: string): Promise<Response> {
@@ -619,7 +650,8 @@ async function setRecentEvent(request: Request, env: MediaEnv, userId: string): 
     const record: CollectionRecord = { id: cid, name: event.name, description: null, coverPhotoId: null,
       createdBy: userId, createdAt: Date.now(), showcaseEventId: event.id };
     await writeJson(env.PHOTOS, collectionKey(cid), record);
-    await writeJson(env.PHOTOS, `site/recent-events/${event.id}`, { recent: true });
+    const setting = await readJson<Record<string, unknown>>(env.PHOTOS, `site/recent-events/${event.id}`);
+    await writeJson(env.PHOTOS, `site/recent-events/${event.id}`, { ...setting, recent: true });
   } else {
     const previous = await readJson<Record<string, unknown>>(env.PHOTOS, `site/recent-events/${event.id}`);
     await writeJson(env.PHOTOS, `site/recent-events/${event.id}`, { ...previous, recent: body.recent });
@@ -675,10 +707,11 @@ type HomeCover = { coverUrl: string | null; collectionId: string | null; photoId
  * The photo behind "Open recent event" on the home page. If the photo or its
  * event has since gone to the recycle bin, the card simply shows no image.
  */
-async function readHomeCover(env: MediaEnv): Promise<HomeCover> {
+async function readHomeCover(env: MediaEnv, isAdmin = false): Promise<HomeCover> {
   const none: HomeCover = { coverUrl: null, collectionId: null, photoId: null };
   const record = await readJson<{ collectionId: string; photoId: string }>(env.PHOTOS, HOME_COVER_KEY);
   if (!record || !isSafeId(record.collectionId) || !isSafeId(record.photoId)) return none;
+  if (!isAdmin && await collectionHidden(env, record.collectionId)) return none;
   const [event, photo] = await Promise.all([
     env.PHOTOS.head(collectionKey(record.collectionId)),
     env.PHOTOS.head(photoMetaKey(record.collectionId, record.photoId)),
@@ -806,6 +839,7 @@ async function listPhotos(
   cid: string,
   cursor: string | null,
   limit: string | null,
+  filename = "",
 ): Promise<Response> {
   const prefix = `meta/photo/${cid}/`;
   const requested = Number(limit ?? 40);
@@ -822,6 +856,7 @@ async function listPhotos(
 
   const photos = records
     .filter((p): p is PhotoMeta => p !== null)
+    .filter((p) => !filename || p.fileName.toLowerCase().includes(filename.toLowerCase()))
     .sort((a, b) => b.createdAt - a.createdAt)
     .map((p) => ({
       id: p.id,
@@ -1821,6 +1856,8 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
 
   const member = await getMemberById(env.PHOTOS, userId);
   if (!member) return json({ error: "No such member" }, 401);
+
+  if (member.role !== "admin" && await collectionHidden(env, cid)) return json({ error: "This event is not available", code: "no-event" }, 404);
 
   // A reference of the wrong width is a profile from the old face-api model,
   // which described faces in 128 numbers rather than 512 and in a space these

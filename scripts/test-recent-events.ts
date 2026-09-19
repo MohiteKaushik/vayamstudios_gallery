@@ -23,7 +23,13 @@ const env = { SESSION_SECRET: "recent-events-test-only", PHOTOS: {
     records.set(key, JSON.parse(body));
   },
   delete: async (key: string | string[]) => { for (const k of Array.isArray(key) ? key : [key]) records.delete(k); },
-  list: async ({ prefix }: { prefix: string }) => ({ objects: [...records.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key })), truncated: false }),
+  list: async ({ prefix, limit = 1000, cursor }: { prefix: string; limit?: number; cursor?: string }) => {
+    const keys = [...records.keys()].filter((key) => key.startsWith(prefix));
+    const start = cursor ? Number(cursor) : 0;
+    const next = start + limit;
+    return { objects: keys.slice(start, next).map((key) => ({ key })), truncated: next < keys.length,
+      ...(next < keys.length ? { cursor: String(next) } : {}) };
+  },
 } } as unknown as MediaEnv;
 const adminToken = await createSessionToken(admin, env.SESSION_SECRET!);
 const memberToken = await createSessionToken(member, env.SESSION_SECRET!);
@@ -156,3 +162,42 @@ for (const id of [emptyStatic, "unknown", "../../private", ""]) {
 }
 assert.equal((await request(`collections?event=${first.id}`, "GET", undefined, null)).status, 401);
 console.log("Event-specific galleries: member access, single/multiple albums, isolation, empty/deleted/invalid events, and authentication passed.");
+
+assert.equal((await request("site/events", "PUT", { id: LEGACY_RECENT_EVENT_ID, hidden: true }, memberToken)).status, 403);
+assert.equal((await request("site/events", "PUT", { id: LEGACY_RECENT_EVENT_ID, hidden: "true" })).status, 400);
+assert.equal((await request("site/events", "PUT", { id: "unknown", hidden: true })).status, 404);
+await request("site/events", "PUT", { id: LEGACY_RECENT_EVENT_ID, hidden: true });
+assert.equal((await events()).find((e) => e.id === LEGACY_RECENT_EVENT_ID)?.hidden, true, "Admins retain hidden event controls");
+const visibleEvents = await (await request("site/events", "GET", undefined, memberToken)).json() as { events: ShowcaseEvent[] };
+assert.ok(!visibleEvents.events.some((e) => e.id === LEGACY_RECENT_EVENT_ID));
+const visibleAlbums = await (await request("collections", "GET", undefined, memberToken)).json() as { collections: { id: string }[] };
+assert.ok(!visibleAlbums.collections.some((c) => new Set<string>([legacy, day2]).has(c.id)));
+assert.equal((await request(`collections?event=${LEGACY_RECENT_EVENT_ID}`, "GET", undefined, memberToken)).status, 404);
+assert.equal((await request(`collections/${legacy}/photos`, "GET", undefined, memberToken)).status, 404);
+assert.equal((await request(`scan/${legacy}`, "GET", undefined, memberToken)).status, 404);
+assert.equal((await request("scan", "POST", { collectionId: legacy }, memberToken)).status, 404);
+assert.equal((await request(`collections/${legacy}/photos`)).status, 200);
+await request("site/events", "PATCH", { id: LEGACY_RECENT_EVENT_ID, recent: true });
+assert.equal((await recentIds()).includes(legacy), false, "Recent toggle must not unhide an event");
+assert.equal(records.get(originalKey), "untouched original bytes");
+await request("site/events", "PUT", { id: LEGACY_RECENT_EVENT_ID, hidden: false });
+assert.ok((await recentIds()).includes(legacy));
+assert.equal((await request(`collections/${legacy}/photos`, "GET", undefined, memberToken)).status, 200);
+assert.equal(records.get(originalKey), "untouched original bytes");
+
+for (let i = 0; i < 85; i++) {
+  records.set(`meta/photo/${first.id}/${i}`, { id: String(i), fileName: i === 82 ? "DSC_0082.JPG" : `Image_${i}.jpg`, createdAt: i, width: 100, height: 100 });
+}
+assert.equal((await request(`collections/${first.id}/photos?filename=0082`, "GET", undefined, memberToken)).status, 403);
+const firstSearchPage = await (await request(`collections/${first.id}/photos?filename=dsc_0082`)).json() as { photos: unknown[]; cursor?: string };
+assert.deepEqual(firstSearchPage.photos, []);
+assert.ok(firstSearchPage.cursor, "Empty first search page must retain its continuation cursor");
+let cursor: string | undefined;
+const matches: { fileName: string }[] = [];
+do {
+  const page = await (await request(`collections/${first.id}/photos?filename=dsc_0082${cursor ? `&cursor=${cursor}` : ""}`)).json() as { photos: { fileName: string }[]; cursor?: string };
+  matches.push(...page.photos); cursor = page.cursor;
+} while (cursor);
+assert.deepEqual(matches.map((p) => p.fileName), ["DSC_0082.JPG"]);
+assert.equal((await request(`collections/${first.id}/photos?filename=${"x".repeat(201)}`)).status, 400);
+console.log("Hide/unhide: admin-only controls, member list and direct gallery/scan exclusion, multiple albums, preserved photos/recent setting. Filename search: case-insensitive partial matches beyond the first 80 photos, empty-page cursors, authorization and validation passed.");

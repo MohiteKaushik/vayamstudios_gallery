@@ -188,7 +188,16 @@ function EditableEventRow({
   });
 
   const trimmed = draft.trim();
-  const busy = confirming || remove.isPending || rename.isPending || visibility.isPending;
+  const hidden = useMutation({
+    mutationFn: (value: boolean) => api.setEventHidden(event.id, value),
+    onSuccess: (events) => {
+      qc.setQueryData(["showcase-events"], events);
+      for (const key of ["collections", "recent-collections", "home-cover", "export-collections"]) void qc.invalidateQueries({ queryKey: [key] });
+      toast.success(event.hidden ? "Event is visible again" : "Event hidden from members. Photos are kept.");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not change event visibility"),
+  });
+  const busy = confirming || remove.isPending || rename.isPending || visibility.isPending || hidden.isPending;
   return (
     <>
     {dialog}
@@ -227,6 +236,7 @@ function EditableEventRow({
         <>
           <span className="min-w-0 flex-1 py-1">
             <span className="block truncate font-medium tracking-[-0.01em]">{title}</span>
+            {event.hidden && <span className="text-xs text-muted-foreground">Hidden from members</span>}
             {place && <span className="block text-xs text-muted-foreground">{place}</span>}
           </span>
           <button
@@ -255,6 +265,11 @@ function EditableEventRow({
         <Trash2 className="size-4" />
       </button>}
       <div className="flex w-full flex-wrap items-center justify-between gap-3 border-t border-hairline pt-3">
+        <label className="flex items-center gap-3 text-sm">
+          <Switch checked={!!event.hidden} disabled={busy} onCheckedChange={(checked) => hidden.mutate(checked)}
+            aria-label={`Hide ${title} from members`} />
+          Hide event
+        </label>
         <label className="flex items-center gap-3 text-sm">
           <Switch checked={event.recent} disabled={busy} onCheckedChange={(checked) => visibility.mutate(checked)}
             aria-label={`Show ${title} in recent events`} />

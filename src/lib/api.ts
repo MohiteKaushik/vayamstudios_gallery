@@ -183,6 +183,9 @@ export const api = {
     call<{ collections: Collection[]; event: ShowcaseEvent }>(`/api/collections?event=${encodeURIComponent(eventId)}`),
 
   showcaseEvents: () => call<{ events: ShowcaseEvent[] }>("/api/site/events").then((r) => r.events),
+  setEventHidden: (id: string, hidden: boolean) => call<{ events: ShowcaseEvent[] }>("/api/site/events", {
+    method: "PUT", body: JSON.stringify({ id, hidden }),
+  }).then((r) => r.events),
   deleteShowcaseEvent: (id: string) => call<{ groupIds: string[] }>("/api/site/events", {
     method: "DELETE", body: JSON.stringify({ id, confirmed: true }),
   }),
@@ -196,9 +199,9 @@ export const api = {
       body: JSON.stringify({ name, description, recent }),
     }),
 
-  listPhotos: (collectionId: string, cursor?: string, limit = 40) =>
+  listPhotos: (collectionId: string, cursor?: string, limit = 40, filename = "") =>
     call<{ photos: Photo[]; cursor?: string }>(
-      `/api/collections/${collectionId}/photos?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      `/api/collections/${collectionId}/photos?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}${filename ? `&filename=${encodeURIComponent(filename)}` : ""}`,
     ),
 
   /** Every photo in a collection, following the pages. */

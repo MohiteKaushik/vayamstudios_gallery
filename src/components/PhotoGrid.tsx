@@ -30,6 +30,7 @@ export function PhotoGrid({
   onToggleSelect,
   showConfidence,
   singleColumn = false,
+  showFileNames = false,
 }: {
   photos: GridPhoto[];
   onOpen: (index: number) => void;
@@ -37,6 +38,7 @@ export function PhotoGrid({
   onToggleSelect?: (id: string) => void;
   showConfidence?: boolean;
   singleColumn?: boolean;
+  showFileNames?: boolean;
 }) {
   return (
     <div className={singleColumn ? "" : "[column-fill:_balance] columns-2 gap-3 md:columns-3 xl:columns-4"}>
@@ -103,6 +105,7 @@ export function PhotoGrid({
                 </button>
               )}
             </div>
+            {showFileNames && <p className="mt-1 break-all px-1 text-xs text-muted-foreground">{photo.fileName ?? photo.id}</p>}
           </div>
         );
       })}

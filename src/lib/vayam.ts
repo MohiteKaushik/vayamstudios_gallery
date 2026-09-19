@@ -60,7 +60,7 @@ export type VayamEvent = {
 };
 
 export const LEGACY_RECENT_EVENT_ID = "ttpoc-carreer-nexus-3";
-export type ShowcaseEvent = VayamEvent & { recent: boolean; collectionIds: string[] };
+export type ShowcaseEvent = VayamEvent & { recent: boolean; hidden?: boolean; collectionIds: string[] };
 
 /**
  * Work the studio has run, in the order the team gave. The order is theirs and
