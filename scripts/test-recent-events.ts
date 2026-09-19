@@ -138,3 +138,21 @@ failWriteKey = `site/recent-events/${second.id}`;
 assert.equal((await request("site/events", "DELETE", { id: second.id, confirmed: true })).status, 500);
 assert.ok(records.has(`meta/collection/${second.id}`), "A failed catalog update restores the collection");
 console.log("Event deletion: both confirmations, cancellation, admin authorization, custom/static/multi-album deletion, original-byte retention, restoration, and permanent deletion passed.");
+
+async function eventAlbums(id: string) {
+  const response = await request(`collections?event=${encodeURIComponent(id)}`, "GET", undefined, memberToken);
+  assert.equal(response.status, 200);
+  return await response.json() as { event: ShowcaseEvent; collections: { id: string }[] };
+}
+const ttpocAlbums = await eventAlbums(LEGACY_RECENT_EVENT_ID);
+assert.equal(ttpocAlbums.event.id, LEGACY_RECENT_EVENT_ID);
+assert.deepEqual(ttpocAlbums.collections.map((c) => c.id).sort(), [legacy, day2].sort());
+const customAlbums = await eventAlbums(first.id);
+assert.equal(customAlbums.event.name, "Renamed conference");
+assert.deepEqual(customAlbums.collections.map((c) => c.id), [first.id], "A custom event must not include other events");
+assert.deepEqual((await eventAlbums("conyape-retreat")).collections, [], "An empty event must not fall back to all albums");
+for (const id of [emptyStatic, "unknown", "../../private", ""]) {
+  assert.equal((await request(`collections?event=${encodeURIComponent(id)}`)).status, 404);
+}
+assert.equal((await request(`collections?event=${first.id}`, "GET", undefined, null)).status, 401);
+console.log("Event-specific galleries: member access, single/multiple albums, isolation, empty/deleted/invalid events, and authentication passed.");

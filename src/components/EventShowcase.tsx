@@ -56,12 +56,12 @@ export function EventShowcase({ editable = false }: { editable?: boolean }) {
               </li>
             );
           }
-          if (event.recent) {
+          if (event.recent || event.collectionIds.length > 0) {
             return (
               <li key={event.id}>
                 <Link
                   to="/collections"
-                  search={{ shared: undefined }}
+                  search={{ shared: undefined, event: event.id }}
                   aria-label={`Open ${shownTitle(event, renames)} photos`}
                 >
                   <EventRow event={event} number={number} place={place} renames={renames} />
@@ -260,7 +260,7 @@ function EditableEventRow({
             aria-label={`Show ${title} in recent events`} />
           Show in recent events
         </label>
-        {event.collectionIds.length > 0 && <Link to="/collections" search={{ shared: event.collectionIds.length === 1 ? event.collectionIds[0] : undefined }}
+        {event.collectionIds.length > 0 && <Link to="/collections" search={{ shared: undefined, event: event.id }}
           className="text-sm underline">Manage photos</Link>}
       </div>
     </GlassCard>

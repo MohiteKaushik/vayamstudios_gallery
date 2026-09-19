@@ -24,8 +24,9 @@ import { confirmEventDeletion } from "@/lib/confirm-event-deletion";
 const PHOTO_PAGE_SIZE = 40;
 
 export const Route = createFileRoute("/collections")({
-  validateSearch: (s: Record<string, unknown>) => ({
+  validateSearch: (s: Record<string, unknown>): { shared: string | undefined; event?: string } => ({
     shared: typeof s["shared"] === "string" ? s["shared"] : undefined,
+    ...(typeof s["event"] === "string" ? { event: s["event"] } : {}),
   }),
   head: () => ({
     meta: [
@@ -47,7 +48,7 @@ function CollectionsPage() {
 
 function Collections({ isAdmin }: { isAdmin: boolean }) {
   const { ask, dialog } = useConfirm();
-  const { shared } = Route.useSearch();
+  const { shared, event } = Route.useSearch();
   const navigate = Route.useNavigate();
   const qc = useQueryClient();
   const [name, setName] = useState("");
@@ -58,8 +59,19 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
   const collections = useQuery({
     queryKey: allEvents ? ["collections"] : ["recent-collections"],
     queryFn: allEvents ? api.listCollections : api.listRecentCollections,
+    enabled: event === undefined,
     retry: false,
   });
+  const eventCollections = useQuery({
+    queryKey: ["collections", "event", event],
+    queryFn: () => api.listEventCollections(event!),
+    enabled: event !== undefined,
+    retry: false,
+  });
+  const listing = event !== undefined ? eventCollections : collections;
+  const albums = event !== undefined ? eventCollections.data?.collections : collections.data;
+  const eventName = eventCollections.data?.event.name;
+  const selectedAlbum = shared ?? (event !== undefined && albums?.length === 1 ? albums[0]?.id : undefined);
 
   const create = useMutation({
     mutationFn: () => api.createCollection(name.trim(), description.trim() || undefined),
@@ -90,20 +102,34 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
     onError: (e) => toast.error(e instanceof Error ? e.message : "Could not delete the collection"),
   });
 
-  if (shared) {
-    const current = collections.data?.find((c) => c.id === shared);
+  // Do not fall back to unrelated albums for a missing event or a mismatched shared link.
+  if (event !== undefined && (listing.isLoading || listing.isError || (shared && albums && !albums.some((c) => c.id === shared)))) {
+    return <AppShell>
+      <button onClick={() => navigate({ to: ".", search: { shared: undefined } })}
+        className="mb-5 inline-flex items-center gap-1 text-sm text-muted-foreground">
+        <ChevronLeft className="size-4" /> Recent Events
+      </button>
+      {listing.isLoading ? <Shimmer className="h-40" /> : <EmptyState tone="error"
+        icon={<Layers className="size-7" />} title="Event unavailable"
+        description={listing.error instanceof Error ? listing.error.message : "This album does not belong to the selected event."} />}
+    </AppShell>;
+  }
+
+  if (selectedAlbum) {
+    const current = albums?.find((c) => c.id === selectedAlbum);
+    const backToEvent = event !== undefined && (albums?.length ?? 0) > 1;
     return (
       <AppShell wide>
         <button
-          onClick={() => navigate({ to: ".", search: { shared: undefined } })}
+          onClick={() => navigate({ to: ".", search: { shared: undefined, ...(backToEvent ? { event } : {}) } })}
           className="press mb-5 inline-flex items-center gap-1 rounded-full text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <ChevronLeft className="size-4" /> Recent Events
+          <ChevronLeft className="size-4" /> {backToEvent ? eventName : "Recent Events"}
         </button>
         {isAdmin ? (
-          <AdminCollection collectionId={shared} name={current?.name ?? "Collection"} />
+          <AdminCollection key={selectedAlbum} collectionId={selectedAlbum} name={current?.name ?? "Collection"} />
         ) : (
-          <MemberCollection collectionId={shared} name={current?.name ?? "Collection"} />
+          <MemberCollection key={selectedAlbum} collectionId={selectedAlbum} name={current?.name ?? "Collection"} />
         )}
       </AppShell>
     );
@@ -114,14 +140,18 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <AppShell>
-      <h1 className="text-3xl font-semibold tracking-[-0.03em]">Recent Events</h1>
+      {event !== undefined && <button onClick={() => navigate({ to: ".", search: { shared: undefined } })}
+        className="mb-5 inline-flex items-center gap-1 text-sm text-muted-foreground">
+        <ChevronLeft className="size-4" /> Recent Events
+      </button>}
+      <h1 className="break-words text-3xl font-semibold tracking-[-0.03em]">{eventName ?? "Recent Events"}</h1>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-        {isAdmin
+        {event !== undefined ? "Event albums" : isAdmin
           ? "Create an event, then add the photos to it. Every face is indexed once so members can find themselves."
           : "Open an event and tap Find me. Only the photos that match your reference face appear."}
       </p>
 
-      {isAdmin && (
+      {isAdmin && event === undefined && (
         <form
           onSubmit={(e: FormEvent) => {
             e.preventDefault();
@@ -157,29 +187,37 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
       )}
 
       <section className="mt-9">
-        {isAdmin && <label className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
+        {isAdmin && event === undefined && <label className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
           <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} className="size-4" />
           Show all events (admin)
         </label>}
-        {collections.isLoading ? (
+        {listing.isLoading ? (
           <Shimmer className="h-40" />
-        ) : collections.isError ? (
+        ) : listing.isError ? (
           <EmptyState
             tone="error"
             icon={<Layers className="size-7" strokeWidth={1.5} />}
             title="No events available"
             description={
-              collections.error instanceof Error ? collections.error.message : "Could not load the events."
+              listing.error instanceof Error ? listing.error.message : "Could not load the events."
             }
           />
-        ) : collections.data?.length ? (
+        ) : albums?.length ? (
           <div className="grid gap-3 sm:grid-cols-2">
-            {collections.data.map((c) => (
+            {albums.map((c) => (
               <GlassCard
                 key={c.id}
                 interactive
                 aria-label={`Open ${c.name}`}
-                onClick={() => navigate({ to: ".", search: { shared: c.id } })}
+                onClick={() => navigate({ to: ".", search: { shared: c.id, ...(event !== undefined ? { event } : {}) } })}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    navigate({ to: ".", search: { shared: c.id, ...(event !== undefined ? { event } : {}) } });
+                  }
+                }}
                 className="group overflow-hidden"
               >
                 <div className="aspect-[16/10] overflow-hidden bg-secondary">
@@ -221,9 +259,9 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
         ) : (
           <EmptyState
             icon={<Layers className="size-7" strokeWidth={1.5} />}
-            title="No events yet"
+            title={event !== undefined ? "No photos yet" : "No events yet"}
             description={
-              isAdmin
+              event !== undefined ? "Photos have not been published for this event yet." : isAdmin
                 ? "Create one above, then add the photos to it."
                 : "Nothing has been published yet. New events will show up here."
             }

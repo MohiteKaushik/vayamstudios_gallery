@@ -179,6 +179,8 @@ export const api = {
 
   listRecentCollections: () =>
     call<{ collections: Collection[] }>("/api/collections?recent=1").then((r) => r.collections),
+  listEventCollections: (eventId: string) =>
+    call<{ collections: Collection[]; event: ShowcaseEvent }>(`/api/collections?event=${encodeURIComponent(eventId)}`),
 
   showcaseEvents: () => call<{ events: ShowcaseEvent[] }>("/api/site/events").then((r) => r.events),
   deleteShowcaseEvent: (id: string) => call<{ groupIds: string[] }>("/api/site/events", {

@@ -330,7 +330,7 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
   const isAdmin = member.role === "admin";
 
   if (head === "collections") {
-    if (rest.length === 0 && request.method === "GET") return listCollections(env, url.searchParams.get("recent") === "1");
+    if (rest.length === 0 && request.method === "GET") return listCollections(env, url.searchParams.get("recent") === "1", url.searchParams.get("event"));
     if (rest.length === 0 && request.method === "POST") {
       if (!isAdmin) return json({ error: "Admins only" }, 403);
       return createCollection(request, env, userId);
@@ -461,9 +461,15 @@ async function collectionRecords(env: MediaEnv): Promise<CollectionRecord[]> {
   return records.filter((r): r is CollectionRecord => r !== null);
 }
 
-async function listCollections(env: MediaEnv, recentOnly = false): Promise<Response> {
+async function listCollections(env: MediaEnv, recentOnly = false, eventId: string | null = null): Promise<Response> {
   let records = await collectionRecords(env);
-  if (recentOnly) {
+  let selectedEvent: ShowcaseEvent | undefined;
+  if (eventId !== null) {
+    selectedEvent = (await readShowcase(env, records)).find((event) => event.id === eventId);
+    if (!selectedEvent) return json({ error: "This event is no longer available" }, 404);
+    const ids = new Set(selectedEvent.collectionIds);
+    records = records.filter((record) => ids.has(record.id));
+  } else if (recentOnly) {
     const ids = new Set((await readShowcase(env, records)).filter((event) => event.recent).flatMap((event) => event.collectionIds));
     records = records.filter((record) => ids.has(record.id));
   }
@@ -484,7 +490,7 @@ async function listCollections(env: MediaEnv, recentOnly = false): Promise<Respo
   );
 
   collections.sort((a, b) => b.createdAt - a.createdAt);
-  return json({ collections });
+  return json({ collections, ...(selectedEvent ? { event: selectedEvent } : {}) });
 }
 
 /**
