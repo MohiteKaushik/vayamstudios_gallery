@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { ContactButton } from "@/components/ContactSheet";
 import { Logo } from "@/components/Logo";
 import { cn } from "@/lib/utils";
+import { UploadActivityIndicator } from "@/components/UploadActivityIndicator";
 
 const nav = [
   { to: "/home", label: "Home", icon: House },
@@ -55,6 +56,7 @@ export function AppShell({ children, wide }: { children: ReactNode; wide?: boole
       >
         {children}
       </main>
+      <UploadActivityIndicator />
 
       <nav
         aria-label="Primary"

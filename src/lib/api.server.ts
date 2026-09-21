@@ -595,9 +595,13 @@ async function readShowcase(env: MediaEnv, records?: CollectionRecord[]): Promis
     }),
   ];
   const resolved = await mapLimit(events, READ_CONCURRENCY, async (event) => {
-    const setting = await readJson<{ recent?: boolean; deleted?: boolean; hidden?: boolean }>(env.PHOTOS, `site/recent-events/${event.id}`);
+    const setting = await readJson<{ recent?: boolean; deleted?: boolean; hidden?: boolean; eventName?: string }>(
+      env.PHOTOS,
+      `site/recent-events/${event.id}`,
+    );
     return {
       ...event,
+      name: setting?.eventName ?? event.name,
       deleted: setting?.deleted === true,
       hidden: setting?.hidden === true,
       recent: typeof setting?.recent === "boolean" ? setting.recent : event.recent,
@@ -757,7 +761,9 @@ async function renamePastEvent(request: Request, env: MediaEnv): Promise<Respons
   if (isSafeId(event.id)) {
     const record = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(event.id));
     if (!record) return json({ error: "No such event" }, 404);
-    await writeJson(env.PHOTOS, collectionKey(record.id), { ...record, name: title });
+    const key = `site/recent-events/${event.id}`;
+    const setting = await readJson<Record<string, unknown>>(env.PHOTOS, key);
+    await writeJson(env.PHOTOS, key, { ...setting, eventName: title });
     return json({ renames: await readRenames(env) });
   }
   const renames = await readRenames(env);
@@ -855,6 +861,13 @@ async function renameCollection(request: Request, env: MediaEnv, cid: string): P
 
   const record = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(cid));
   if (!record) return json({ error: "Unknown event" }, 404);
+  if (record.id === record.showcaseEventId) {
+    const key = `site/recent-events/${record.id}`;
+    const setting = await readJson<Record<string, unknown>>(env.PHOTOS, key);
+    if (typeof setting?.["eventName"] !== "string") {
+      await writeJson(env.PHOTOS, key, { ...setting, eventName: record.name });
+    }
+  }
   const updated: CollectionRecord = { ...record, name };
   await writeJson(env.PHOTOS, collectionKey(cid), updated);
   return json(updated);
@@ -915,6 +928,12 @@ async function createCollection(
   record.showcaseEventId = eventId ?? record.id;
   if (!eventId) record.recent = body.recent !== false;
   await writeJson(env.PHOTOS, collectionKey(record.id), record);
+  if (!eventId) {
+    await writeJson(env.PHOTOS, `site/recent-events/${record.id}`, {
+      eventName: record.name,
+      recent: record.recent,
+    });
+  }
 
   // A newly created custom event starts as an empty album. On its first
   // subfolder, turn that starter into the event container so members see only
@@ -922,6 +941,13 @@ async function createCollection(
   if (eventId) {
     const root = collections.find((collection) =>
       collection.id === eventId && collection.showcaseEventId === eventId && !collection.containerOnly);
+    if (root) {
+      const key = `site/recent-events/${eventId}`;
+      const setting = await readJson<Record<string, unknown>>(env.PHOTOS, key);
+      if (typeof setting?.["eventName"] !== "string") {
+        await writeJson(env.PHOTOS, key, { ...setting, eventName: root.name });
+      }
+    }
     if (root && await countPhotos(env.PHOTOS, root.id) === 0) {
       await writeJson(env.PHOTOS, collectionKey(root.id), { ...root, containerOnly: true });
     }

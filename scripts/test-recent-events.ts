@@ -75,6 +75,10 @@ assert.deepEqual((await events()).find((e) => e.id === district.id)?.collectionI
 await request("site/past-events", "PUT", { id: first.id, title: "Renamed conference" });
 assert.equal((await events()).find((e) => e.id === first.id)?.name, "Renamed conference");
 assert.equal((await events()).find((e) => e.id === first.id)?.recent, false);
+await request(`collections/${first.id}`, "PATCH", { name: "Conference Day 1" });
+assert.equal((records.get(`meta/collection/${first.id}`) as { name: string }).name, "Conference Day 1");
+assert.equal((await events()).find((e) => e.id === first.id)?.name, "Renamed conference",
+  "Renaming the first subfolder must not rename its main event");
 await request("site/past-events", "PUT", { id: district.id, title: "District renamed" });
 assert.equal((await events()).find((e) => e.id === district.id)?.recent, true);
 for (const body of [null, {}, { id: first.id, recent: "true" }]) assert.equal((await request("site/events", "PATCH", body)).status, 400);
@@ -221,3 +225,14 @@ assert.equal(multiDayGroups.length, 3, "Deleting an event includes its hidden co
 for (const group of multiDayGroups) await restoreFromBin(env, group);
 assert.deepEqual((await eventAlbums(multiDay.id)).collections.map((c) => c.id).sort(), [dayOne.id, dayTwo.id].sort());
 console.log("Event subfolders: admin authorization, parent validation, duplicate names, empty-root conversion, member listing, deletion and restoration passed.");
+
+const oldCustom = crypto.randomUUID();
+records.set(`meta/collection/${oldCustom}`, {
+  id: oldCustom, name: "Existing main event", showcaseEventId: oldCustom, createdAt: Date.now(),
+});
+records.delete(`site/recent-events/${oldCustom}`);
+assert.equal((await request(`collections/${oldCustom}`, "PATCH", { name: "Existing Day 1" })).status, 200);
+assert.equal((await events()).find((e) => e.id === oldCustom)?.name, "Existing main event",
+  "The first folder rename migrates an older event to independent event metadata");
+assert.equal((records.get(`meta/collection/${oldCustom}`) as { name: string }).name, "Existing Day 1");
+console.log("Independent naming: new and pre-migration event titles remain separate from first-subfolder names.");

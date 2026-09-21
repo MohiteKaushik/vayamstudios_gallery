@@ -21,6 +21,7 @@ import { dayLabel, timeLabel } from "@/lib/time";
 import { useIsAdmin } from "@/lib/roles";
 import { confirmEventDeletion } from "@/lib/confirm-event-deletion";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { beginPhotoUpload, useUploadActivity } from "@/lib/upload-activity";
 
 const PHOTO_PAGE_SIZE = 40;
 
@@ -488,7 +489,9 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
   const { ask, dialog } = useConfirm();
   const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [progress, setProgress] = useState<BulkProgress | null>(null);
+  const [operationProgress, setOperationProgress] = useState<BulkProgress | null>(null);
+  const uploadActivity = useUploadActivity(collectionId);
+  const progress = uploadActivity?.progress ?? operationProgress;
   // Live indexing runs until it is stopped, so it is held as a controller
   // rather than a boolean: closing the tab has to end it too.
   const [watcher, setWatcher] = useState<AbortController | null>(null);
@@ -540,8 +543,15 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
   async function upload(list: FileList | null) {
     const files = Array.from(list ?? []).filter((f) => f.type.startsWith("image/"));
     if (!files.length) return;
+    let tracker: ReturnType<typeof beginPhotoUpload> | null = null;
     try {
-      const r = await uploadPhotos({ collectionId, files, onProgress: setProgress });
+      tracker = beginPhotoUpload({
+        collectionId,
+        collectionName: name,
+        ...(eventId ? { eventId } : {}),
+        total: files.length,
+      });
+      const r = await uploadPhotos({ collectionId, files, onProgress: tracker.report });
       const added = r.processed - r.failed;
 
       if (added === 0) {
@@ -573,7 +583,7 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Upload failed");
     } finally {
-      setProgress(null);
+      tracker?.finish();
     }
   }
 
@@ -585,7 +595,7 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
     if (watcher) {
       watcher.abort();
       setWatcher(null);
-      setProgress(null);
+      setOperationProgress(null);
       setIdle(null);
       toast.info("Stopped watching for new photos");
       return;
@@ -598,10 +608,10 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
       signal: controller.signal,
       onProgress: (p) => {
         setIdle(null);
-        setProgress({ ...p });
+        setOperationProgress({ ...p });
       },
       onIdle: (indexed) => {
-        setProgress(null);
+        setOperationProgress(null);
         setIdle(indexed);
         qc.invalidateQueries({ queryKey: ["photos", collectionId] });
       },
@@ -634,7 +644,7 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
     try {
       const r = await reanalyseCollection({
         collectionId,
-        onProgress: (p) => setProgress({ ...p }),
+        onProgress: (p) => setOperationProgress({ ...p }),
       });
       const failedNote = r.failed > 0 ? `, ${r.failed} failed` : "";
       toast.success(
@@ -647,7 +657,7 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not re-analyse this event");
     } finally {
-      setProgress(null);
+      setOperationProgress(null);
     }
   }
 
@@ -1190,8 +1200,8 @@ function batchTitle(batch: Batch): string {
 }
 
 /**
- * The event's name, with a pencil to rename it. Operators only: this sits in
- * the admin view of an event, and the server refuses anyone else.
+ * The subfolder's name, with a pencil to rename it. Operators only: this sits
+ * in the admin view of a folder, and the server refuses anyone else.
  */
 function EventTitle({ collectionId, name }: { collectionId: string; name: string }) {
   const qc = useQueryClient();
@@ -1207,7 +1217,7 @@ function EventTitle({ collectionId, name }: { collectionId: string; name: string
       qc.invalidateQueries({ queryKey: ["showcase-events"] });
       qc.invalidateQueries({ queryKey: ["recent-collections"] });
     },
-    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not rename the event"),
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not rename the subfolder"),
   });
 
   if (!editing) {
@@ -1216,7 +1226,7 @@ function EventTitle({ collectionId, name }: { collectionId: string; name: string
         <h1 className="text-3xl font-semibold tracking-[-0.03em]">{name}</h1>
         <button
           type="button"
-          aria-label="Rename event"
+          aria-label="Rename subfolder"
           onClick={() => {
             setDraft(name);
             setEditing(true);
@@ -1241,7 +1251,7 @@ function EventTitle({ collectionId, name }: { collectionId: string; name: string
     >
       <input
         autoFocus
-        aria-label="Event name"
+        aria-label="Subfolder name"
         value={draft}
         maxLength={120}
         onChange={(e) => setDraft(e.target.value)}
