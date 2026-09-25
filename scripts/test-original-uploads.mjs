@@ -50,12 +50,14 @@ const dependencies = {
   "./api": { api: { allPhotos: async () => [{ id: currentPhoto, fileName: "photo.jpg" }] } },
 };
 let currentPhoto;
+const storedFiles = [];
 async function fetcher(url, init = {}) {
   if (url === "/media/index") {
     indexed = JSON.parse(init.body);
     return Response.json({ indexed: 1 });
   }
   const headers = new Headers(init.headers);
+  if (url.startsWith("/media/upload?") && !url.includes("kind=thumb")) storedFiles.push(init.body);
   headers.set("cookie", cookie);
   const response = await handleMediaRequest(new Request(`https://test.local${url}`, { ...init, headers }), env);
   assert.ok(response, `Unexpected URL ${url}`);
@@ -72,7 +74,7 @@ function loadClientModule(path) {
   });
   return exports;
 }
-const { uploadPhoto } = loadClientModule("../src/lib/upload.ts");
+const { uploadPhoto, uploadPhotos } = loadClientModule("../src/lib/upload.ts");
 const { reanalyseCollection } = loadClientModule("../src/lib/reanalyse.ts");
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 for (const [type, extension, w, h] of [
@@ -114,4 +116,24 @@ const before = objects.size;
 await assert.rejects(uploadPhoto({ collectionId: cid, file: new File(["raw"], "photo.heic", { type: "image/heic" }) }), /not converted/);
 await assert.rejects(uploadPhoto({ collectionId: cid, file: new File([new Uint8Array(25 * 1024 * 1024 + 1)], "large.jpg", { type: "image/jpeg" }) }), /25 MB/);
 assert.equal(objects.size, before, "Rejected files must not create uploads");
+const originals = [0, 1, 2].map((i) => new File([randomBytes(64)], `queue-${i}.jpg`, { type: "image/jpeg" }));
+const edited = new File([randomBytes(128)], originals[0].name, { type: "image/jpeg" });
+storedFiles.length = 0;
+let prepared = 0;
+const progress = await uploadPhotos({
+  collectionId: cid, files: originals, onProgress() {},
+  prepareFile: async (file) => {
+    assert.equal(storedFiles.length, prepared, "Finish each upload before preparing the next image");
+    prepared += 1;
+    if (file === originals[2]) throw new Error("Edited file exceeds the size limit");
+    return file === originals[0] ? edited : file;
+  },
+});
+assert.equal(progress.processed, 3);
+assert.equal(progress.failed, 1);
+assert.match(progress.firstError, /size limit/);
+assert.equal(storedFiles[0], edited, "Upload the edited copy when edits were requested");
+assert.equal(storedFiles[1], originals[1], "An untouched selection stays byte-for-byte original");
+assert.equal(storedFiles.length, 2, "Failed edits must not silently upload the original");
+console.log("Optional editing: sequential preparation, edited copies, untouched originals, and failure isolation passed.");
 console.log("Original uploads: JPEG/PNG/WebP/AVIF unchanged through upload, storage, folder and ZIP; thumbnails separate; original and legacy indexing dimensions; unsupported/oversized files rejected. Passed.");

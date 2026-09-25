@@ -187,6 +187,7 @@ export async function uploadPhotos(opts: {
   collectionId: string;
   files: File[];
   onProgress: (p: BulkProgress) => void;
+  prepareFile?: (file: File) => Promise<File>;
   signal?: AbortSignal;
 }): Promise<BulkProgress> {
   const { collectionId, files, onProgress } = opts;
@@ -207,9 +208,10 @@ export async function uploadPhotos(opts: {
     p.current = file.name;
     onProgress({ ...p });
     try {
+      const prepared = opts.prepareFile ? await opts.prepareFile(file) : file;
       const r = await uploadPhoto({
         collectionId,
-        file,
+        file: prepared,
         ...(opts.signal ? { signal: opts.signal } : {}),
         onStep: () => onProgress({ ...p }),
       });

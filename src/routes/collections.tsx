@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
-import { Check, CheckCheck, ChevronLeft, Copy, FolderPlus, Image as ImageIcon, ImagePlus, Layers, Loader2, Pencil, Plus, Radio, RefreshCw, ScanFace, Search, Trash2, X } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Check, CheckCheck, ChevronLeft, Copy, FolderPlus, Image as ImageIcon, ImagePlus, Layers, Loader2, Pencil, Plus, Radio, RefreshCw, ScanFace, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { lazy, Suspense, useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { ScanProgress } from "@/components/ScanProgress";
@@ -22,6 +22,9 @@ import { useIsAdmin } from "@/lib/roles";
 import { confirmEventDeletion } from "@/lib/confirm-event-deletion";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { beginPhotoUpload, useUploadActivity } from "@/lib/upload-activity";
+import type { PhotoEdits } from "@/lib/photo-edits";
+
+const PhotoUploadEditor = lazy(() => import("@/components/PhotoUploadEditor"));
 
 const PHOTO_PAGE_SIZE = 40;
 
@@ -489,6 +492,8 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
   const { ask, dialog } = useConfirm();
   const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
+  const editBeforeUpload = useRef(false);
+  const [editingFiles, setEditingFiles] = useState<File[] | null>(null);
   const [operationProgress, setOperationProgress] = useState<BulkProgress | null>(null);
   const uploadActivity = useUploadActivity(collectionId);
   const progress = uploadActivity?.progress ?? operationProgress;
@@ -540,8 +545,7 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
     onError: (e) => toast.error(e instanceof Error ? e.message : "Could not delete those photos"),
   });
 
-  async function upload(list: FileList | null) {
-    const files = Array.from(list ?? []).filter((f) => f.type.startsWith("image/"));
+  async function upload(files: File[], edits?: ReadonlyMap<File, PhotoEdits>) {
     if (!files.length) return;
     let tracker: ReturnType<typeof beginPhotoUpload> | null = null;
     try {
@@ -551,7 +555,15 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
         ...(eventId ? { eventId } : {}),
         total: files.length,
       });
-      const r = await uploadPhotos({ collectionId, files, onProgress: tracker.report });
+      const r = await uploadPhotos({
+        collectionId, files, onProgress: tracker.report,
+        ...(edits?.size ? { prepareFile: async (file: File) => {
+          const adjustments = edits.get(file);
+          if (!adjustments) return file;
+          const { applyPhotoEdits } = await import("@/lib/photo-edits");
+          return applyPhotoEdits(file, adjustments);
+        } } : {}),
+      });
       const added = r.processed - r.failed;
 
       if (added === 0) {
@@ -711,11 +723,13 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
         <input
           ref={inputRef}
           type="file"
-          accept="image/*"
+          accept="image/jpeg,image/png,image/webp,image/avif"
           multiple
           className="hidden"
           onChange={(e) => {
-            upload(e.target.files);
+            const files = Array.from(e.target.files ?? []).filter((file) => file.type.startsWith("image/"));
+            if (files.length && editBeforeUpload.current) setEditingFiles(files);
+            else void upload(files);
             e.target.value = "";
           }}
         />
@@ -749,14 +763,30 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
             Re-analyse
           </GlassButton>
           <GlassButton
+            variant="quiet"
+            icon={<SlidersHorizontal className="size-4" />}
+            onClick={() => { editBeforeUpload.current = true; inputRef.current?.click(); }}
+            disabled={!!progress}
+          >
+            Edit &amp; upload
+          </GlassButton>
+          <GlassButton
             icon={<ImagePlus className="size-4" />}
-            onClick={() => inputRef.current?.click()}
+            onClick={() => { editBeforeUpload.current = false; inputRef.current?.click(); }}
             disabled={!!progress}
           >
             Add photos
           </GlassButton>
         </div>
       </div>
+
+      {editingFiles && <Suspense fallback={<p role="status" className="mb-4">Opening photo editor...</p>}>
+        <PhotoUploadEditor files={editingFiles} onCancel={() => setEditingFiles(null)} onUpload={(edits) => {
+          const files = editingFiles;
+          setEditingFiles(null);
+          void upload(files, edits);
+        }} />
+      </Suspense>}
 
       <form className="mb-6 flex flex-wrap items-center gap-2" onSubmit={(e) => {
         e.preventDefault();
