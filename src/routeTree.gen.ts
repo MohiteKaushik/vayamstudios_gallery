@@ -14,6 +14,7 @@ import { Route as AdminRouteImport } from './routes/admin'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as CollectionsRouteImport } from './routes/collections'
 import { Route as HomeRouteImport } from './routes/home'
+import { Route as LiveEventsRouteImport } from './routes/live-events'
 import { Route as PhotosRouteImport } from './routes/photos'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ShareTokenRouteImport } from './routes/share.$token'
@@ -43,6 +44,11 @@ const HomeRoute = HomeRouteImport.update({
   path: '/home',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LiveEventsRoute = LiveEventsRouteImport.update({
+  id: '/live-events',
+  path: '/live-events',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PhotosRoute = PhotosRouteImport.update({
   id: '/photos',
   path: '/photos',
@@ -65,6 +71,7 @@ export interface FileRoutesByFullPath {
   '/auth': typeof AuthRoute
   '/collections': typeof CollectionsRoute
   '/home': typeof HomeRoute
+  '/live-events': typeof LiveEventsRoute
   '/photos': typeof PhotosRoute
   '/settings': typeof SettingsRoute
   '/share/$token': typeof ShareTokenRoute
@@ -75,6 +82,7 @@ export interface FileRoutesByTo {
   '/auth': typeof AuthRoute
   '/collections': typeof CollectionsRoute
   '/home': typeof HomeRoute
+  '/live-events': typeof LiveEventsRoute
   '/photos': typeof PhotosRoute
   '/settings': typeof SettingsRoute
   '/share/$token': typeof ShareTokenRoute
@@ -86,6 +94,7 @@ export interface FileRoutesById {
   '/auth': typeof AuthRoute
   '/collections': typeof CollectionsRoute
   '/home': typeof HomeRoute
+  '/live-events': typeof LiveEventsRoute
   '/photos': typeof PhotosRoute
   '/settings': typeof SettingsRoute
   '/share/$token': typeof ShareTokenRoute
@@ -98,6 +107,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/collections'
     | '/home'
+    | '/live-events'
     | '/photos'
     | '/settings'
     | '/share/$token'
@@ -108,6 +118,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/collections'
     | '/home'
+    | '/live-events'
     | '/photos'
     | '/settings'
     | '/share/$token'
@@ -118,6 +129,7 @@ export interface FileRouteTypes {
     | '/auth'
     | '/collections'
     | '/home'
+    | '/live-events'
     | '/photos'
     | '/settings'
     | '/share/$token'
@@ -129,6 +141,7 @@ export interface RootRouteChildren {
   AuthRoute: typeof AuthRoute
   CollectionsRoute: typeof CollectionsRoute
   HomeRoute: typeof HomeRoute
+  LiveEventsRoute: typeof LiveEventsRoute
   PhotosRoute: typeof PhotosRoute
   SettingsRoute: typeof SettingsRoute
   ShareTokenRoute: typeof ShareTokenRoute
@@ -171,6 +184,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HomeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/live-events': {
+      id: '/live-events'
+      path: '/live-events'
+      fullPath: '/live-events'
+      preLoaderRoute: typeof LiveEventsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/photos': {
       id: '/photos'
       path: '/photos'
@@ -201,6 +221,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthRoute: AuthRoute,
   CollectionsRoute: CollectionsRoute,
   HomeRoute: HomeRoute,
+  LiveEventsRoute: LiveEventsRoute,
   PhotosRoute: PhotosRoute,
   SettingsRoute: SettingsRoute,
   ShareTokenRoute: ShareTokenRoute,

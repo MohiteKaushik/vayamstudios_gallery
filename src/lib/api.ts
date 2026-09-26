@@ -180,8 +180,10 @@ export const api = {
 
   listRecentCollections: () =>
     call<{ collections: Collection[] }>("/api/collections?recent=1").then((r) => r.collections),
-  listEventCollections: (eventId: string) =>
-    call<{ collections: Collection[]; event: ShowcaseEvent }>(`/api/collections?event=${encodeURIComponent(eventId)}`),
+  listLiveCollections: () =>
+    call<{ collections: Collection[] }>("/api/collections?live=1").then((r) => r.collections),
+  listEventCollections: (eventId: string, live = false) =>
+    call<{ collections: Collection[]; event: ShowcaseEvent }>(`/api/collections?event=${encodeURIComponent(eventId)}${live ? "&live=1" : ""}`),
 
   showcaseEvents: () => call<{ events: ShowcaseEvent[] }>("/api/site/events").then((r) => r.events),
   setEventHidden: (id: string, hidden: boolean) => call<{ events: ShowcaseEvent[] }>("/api/site/events", {
@@ -194,10 +196,14 @@ export const api = {
     method: "PATCH", body: JSON.stringify({ id, recent }),
   }).then((r) => r.events),
 
-  createCollection: (name: string, description?: string, recent = true) =>
+  setLiveEvent: (id: string, live: boolean) => call<{ events: ShowcaseEvent[] }>("/api/site/events", {
+    method: "PATCH", body: JSON.stringify({ id, live }),
+  }).then((r) => r.events),
+
+  createCollection: (name: string, description?: string, recent = true, live = false) =>
     call<Collection>("/api/collections", {
       method: "POST",
-      body: JSON.stringify({ name, description, recent }),
+      body: JSON.stringify({ name, description, recent, live }),
     }),
   createEventSubfolder: (eventId: string, name: string, description?: string) =>
     call<Collection>("/api/collections", {

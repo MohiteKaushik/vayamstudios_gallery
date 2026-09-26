@@ -57,11 +57,11 @@ export function EventShowcase({ editable = false }: { editable?: boolean }) {
               </li>
             );
           }
-          if (event.recent || event.collectionIds.length > 0) {
+          if (event.live || event.recent || event.collectionIds.length > 0) {
             return (
               <li key={event.id}>
                 <Link
-                  to="/collections"
+                  to={event.live ? "/live-events" : "/collections"}
                   search={{ shared: undefined, event: event.id }}
                   aria-label={`Open ${shownTitle(event, renames)} photos`}
                 >
@@ -189,6 +189,14 @@ function EditableEventRow({
   });
 
   const trimmed = draft.trim();
+  const live = useMutation({
+    mutationFn: (value: boolean) => api.setLiveEvent(event.id, value),
+    onSuccess: (events) => {
+      qc.setQueryData(["showcase-events"], events);
+      void qc.invalidateQueries({ queryKey: ["collections"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Could not update live event"),
+  });
   const hidden = useMutation({
     mutationFn: (value: boolean) => api.setEventHidden(event.id, value),
     onSuccess: (events) => {
@@ -198,7 +206,7 @@ function EditableEventRow({
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Could not change event visibility"),
   });
-  const busy = confirming || remove.isPending || rename.isPending || visibility.isPending || hidden.isPending;
+  const busy = confirming || remove.isPending || rename.isPending || visibility.isPending || hidden.isPending || live.isPending;
   return (
     <>
     {dialog}
@@ -277,6 +285,11 @@ function EditableEventRow({
             aria-label={`Show ${title} in recent events`} />
           Show in recent events
         </label>
+        <label className="flex items-center gap-3 text-sm">
+          <Switch checked={event.live} disabled={busy} onCheckedChange={(checked) => live.mutate(checked)}
+            aria-label={`Show ${title} in live events`} />
+          Show in live events
+        </label>
         {event.collectionIds.length > 0 && <Link to="/collections" search={{ shared: undefined, event: event.id }}
           className="text-sm underline">Manage photos</Link>}
       </div>
@@ -289,8 +302,9 @@ function NewShowcaseEvent() {
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [recent, setRecent] = useState(true);
+  const [live, setLive] = useState(false);
   const create = useMutation({
-    mutationFn: () => api.createCollection(name.trim(), undefined, recent),
+    mutationFn: () => api.createCollection(name.trim(), undefined, recent, live),
     onSuccess: () => {
       setName("");
       void qc.invalidateQueries({ queryKey: ["showcase-events"] });
@@ -306,6 +320,7 @@ function NewShowcaseEvent() {
       disabled={create.isPending} onChange={(e) => setName(e.target.value)}
       className="h-11 w-full min-w-0 rounded-lg border border-hairline bg-secondary px-4 text-sm sm:flex-1" />
     <label className="flex items-center gap-2 text-sm"><Switch checked={recent} disabled={create.isPending} onCheckedChange={setRecent} />Show in recent events</label>
+    <label className="flex items-center gap-2 text-sm"><Switch checked={live} disabled={create.isPending} onCheckedChange={setLive} />Show in live events</label>
     <GlassButton type="submit" size="sm" icon={<Plus className="size-4" />} loading={create.isPending} disabled={name.trim().length < 2}>Add event</GlassButton>
   </form>;
 }

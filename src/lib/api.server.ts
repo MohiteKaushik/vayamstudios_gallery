@@ -333,7 +333,7 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
   const isAdmin = member.role === "admin";
 
   if (head === "collections") {
-    if (rest.length === 0 && request.method === "GET") return listCollections(env, url.searchParams.get("recent") === "1", url.searchParams.get("event"), isAdmin);
+    if (rest.length === 0 && request.method === "GET") return listCollections(env, url.searchParams.get("recent") === "1", url.searchParams.get("event"), isAdmin, url.searchParams.get("live") === "1");
     if (rest.length === 0 && request.method === "POST") {
       if (!isAdmin) return json({ error: "Admins only" }, 403);
       return createCollection(request, env, userId);
@@ -396,7 +396,7 @@ async function route(request: Request, env: MediaEnv, url: URL): Promise<Respons
     }
     if (request.method === "GET") return json({ events: (await readShowcase(env)).filter((event) => isAdmin || !event.hidden) });
     if (!isAdmin) return json({ error: "Admins only" }, 403);
-    if (request.method === "PATCH") return setRecentEvent(request, env, userId);
+    if (request.method === "PATCH") return setEventListing(request, env, userId);
     if (request.method === "PUT") return setEventHidden(request, env);
     if (request.method === "DELETE") return deleteShowcaseEvent(request, env, userId);
     return json({ error: "Method not allowed" }, 405);
@@ -485,7 +485,7 @@ async function collectionRecords(env: MediaEnv): Promise<CollectionRecord[]> {
   return records.filter((r): r is CollectionRecord => r !== null);
 }
 
-async function listCollections(env: MediaEnv, recentOnly = false, eventId: string | null = null, isAdmin = false): Promise<Response> {
+async function listCollections(env: MediaEnv, recentOnly = false, eventId: string | null = null, isAdmin = false, liveOnly = false): Promise<Response> {
   let records = await collectionRecords(env);
   const events = (await readShowcase(env, records)).filter((event) => isAdmin || !event.hidden);
   records = records.filter((record) => !record.containerOnly);
@@ -495,12 +495,12 @@ async function listCollections(env: MediaEnv, recentOnly = false, eventId: strin
   }
   let selectedEvent: ShowcaseEvent | undefined;
   if (eventId !== null) {
-    selectedEvent = events.find((event) => event.id === eventId);
+    selectedEvent = events.find((event) => event.id === eventId && (!liveOnly || event.live));
     if (!selectedEvent) return json({ error: "This event is no longer available" }, 404);
     const ids = new Set(selectedEvent.collectionIds);
     records = records.filter((record) => ids.has(record.id));
-  } else if (recentOnly) {
-    const ids = new Set(events.filter((event) => event.recent && !event.hidden).flatMap((event) => event.collectionIds));
+  } else if (recentOnly || liveOnly) {
+    const ids = new Set(events.filter((event) => (!recentOnly || event.recent) && (!liveOnly || event.live) && !event.hidden).flatMap((event) => event.collectionIds));
     records = records.filter((record) => ids.has(record.id));
   }
 
@@ -595,7 +595,7 @@ async function readShowcase(env: MediaEnv, records?: CollectionRecord[]): Promis
     }),
   ];
   const resolved = await mapLimit(events, READ_CONCURRENCY, async (event) => {
-    const setting = await readJson<{ recent?: boolean; deleted?: boolean; hidden?: boolean; eventName?: string }>(
+    const setting = await readJson<{ recent?: boolean; live?: boolean; deleted?: boolean; hidden?: boolean; eventName?: string }>(
       env.PHOTOS,
       `site/recent-events/${event.id}`,
     );
@@ -605,6 +605,7 @@ async function readShowcase(env: MediaEnv, records?: CollectionRecord[]): Promis
       deleted: setting?.deleted === true,
       hidden: setting?.hidden === true,
       recent: typeof setting?.recent === "boolean" ? setting.recent : event.recent,
+      live: setting?.live === true,
       // Existing day albums belonged to TTPOC before event associations existed.
       collectionIds: collections
         .filter((c) => !c.containerOnly && (c.showcaseEventId ?? LEGACY_RECENT_EVENT_ID) === event.id)
@@ -711,10 +712,15 @@ async function deleteShowcaseEvent(request: Request, env: MediaEnv, userId: stri
   return json({ groupIds: groups });
 }
 
-async function setRecentEvent(request: Request, env: MediaEnv, userId: string): Promise<Response> {
-  let body: { id?: unknown; recent?: unknown } | null;
+async function setEventListing(request: Request, env: MediaEnv, userId: string): Promise<Response> {
+  let body: { id?: unknown; recent?: unknown; live?: unknown } | null;
   try { body = await request.json() as typeof body; } catch { return json({ error: "Malformed body" }, 400); }
-  if (!body || typeof body.id !== "string" || typeof body.recent !== "boolean") return json({ error: "An event and a boolean recent setting are required" }, 400);
+  if (!body || typeof body.id !== "string"
+    || (body.recent === undefined && body.live === undefined)
+    || (body.recent !== undefined && typeof body.recent !== "boolean")
+    || (body.live !== undefined && typeof body.live !== "boolean")) {
+    return json({ error: "An event and a boolean recent or live setting are required" }, 400);
+  }
   const event = (await readShowcase(env)).find((e) => e.id === body.id);
   if (!event) return json({ error: "No such event" }, 404);
   if (body.recent && !event.collectionIds.length) {
@@ -722,12 +728,13 @@ async function setRecentEvent(request: Request, env: MediaEnv, userId: string): 
     const record: CollectionRecord = { id: cid, name: event.name, description: null, coverPhotoId: null,
       createdBy: userId, createdAt: Date.now(), showcaseEventId: event.id };
     await writeJson(env.PHOTOS, collectionKey(cid), record);
-    const setting = await readJson<Record<string, unknown>>(env.PHOTOS, `site/recent-events/${event.id}`);
-    await writeJson(env.PHOTOS, `site/recent-events/${event.id}`, { ...setting, recent: true });
-  } else {
-    const previous = await readJson<Record<string, unknown>>(env.PHOTOS, `site/recent-events/${event.id}`);
-    await writeJson(env.PHOTOS, `site/recent-events/${event.id}`, { ...previous, recent: body.recent });
   }
+  const key = `site/recent-events/${event.id}`;
+  const previous = await readJson<Record<string, unknown>>(env.PHOTOS, key);
+  await writeJson(env.PHOTOS, key, { ...previous,
+    ...(typeof body.recent === "boolean" ? { recent: body.recent } : {}),
+    ...(typeof body.live === "boolean" ? { live: body.live } : {}),
+  });
   return json({ events: await readShowcase(env) });
 }
 
@@ -889,7 +896,7 @@ async function createCollection(
   env: MediaEnv,
   userId: string,
 ): Promise<Response> {
-  let body: { name?: unknown; description?: unknown; recent?: unknown; eventId?: unknown } | null;
+  let body: { name?: unknown; description?: unknown; recent?: unknown; live?: unknown; eventId?: unknown } | null;
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -897,6 +904,7 @@ async function createCollection(
   }
   if (!body || typeof body.name !== "string"
     || (body.recent !== undefined && typeof body.recent !== "boolean")
+    || (body.live !== undefined && typeof body.live !== "boolean")
     || (body.eventId !== undefined && typeof body.eventId !== "string")) {
     return json({ error: "Invalid event details" }, 400);
   }
@@ -932,6 +940,7 @@ async function createCollection(
     await writeJson(env.PHOTOS, `site/recent-events/${record.id}`, {
       eventName: record.name,
       recent: record.recent,
+      live: body.live === true,
     });
   }
 

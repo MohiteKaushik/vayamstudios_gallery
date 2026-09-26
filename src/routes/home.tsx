@@ -101,13 +101,13 @@ function Home({ userId }: { userId: string }) {
     return (
       <AppShell>
         <section className="rise-in">
-          <h1 className="text-3xl font-semibold tracking-[-0.03em]">Recent Events</h1>
+          <h1 className="text-3xl font-semibold tracking-[-0.03em]">Live Events</h1>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
             Create an event, then upload the photos. Members see only the frames they appear in.
           </p>
-          <Link to="/collections" search={{ shared: undefined }} className="mt-8 inline-flex">
+          <Link to="/live-events" search={{ shared: undefined }} target="_blank" rel="noopener noreferrer" className="mt-8 inline-flex">
             <GlassButton size="lg" icon={<Layers className="size-4" />}>
-              Open recent events
+              Open Live Event
             </GlassButton>
           </Link>
         </section>
@@ -153,7 +153,7 @@ function FaceCard() {
         </div>
       </div>
 
-      <Link to="/collections" search={{ shared: undefined }}>
+      <Link to="/live-events" search={{ shared: undefined }} target="_blank" rel="noopener noreferrer">
         <RecentEventCard />
       </Link>
     </section>
@@ -182,7 +182,7 @@ function RecentEventCard() {
       )}
       <Layers className={cn("mb-5 size-8", cover ? "text-foreground/80" : "text-muted-foreground")} strokeWidth={1.4} />
       <p className={cn("text-lg font-medium tracking-[-0.02em]", cover && "drop-shadow-[0_1px_8px_rgba(0,0,0,0.65)]")}>
-        Open recent events
+        Open Live Event
       </p>
       <p className={cn("mt-1 text-sm", cover ? "text-foreground/80" : "text-muted-foreground")}>
         Photos are published by the organisers

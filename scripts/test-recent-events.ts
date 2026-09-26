@@ -236,3 +236,51 @@ assert.equal((await events()).find((e) => e.id === oldCustom)?.name, "Existing m
   "The first folder rename migrates an older event to independent event metadata");
 assert.equal((records.get(`meta/collection/${oldCustom}`) as { name: string }).name, "Existing Day 1");
 console.log("Independent naming: new and pre-migration event titles remain separate from first-subfolder names.");
+
+const liveIds = async () => {
+  const response = await request("collections?live=1", "GET", undefined, memberToken);
+  assert.equal(response.status, 200);
+  return ((await response.json()) as { collections: { id: string }[] }).collections.map((c) => c.id).sort();
+};
+assert.ok((await events()).every((e) => e.live === false), "Existing events must not become live automatically");
+assert.deepEqual(await liveIds(), []);
+assert.equal((await request("site/events", "PATCH", { id: first.id, live: true }, memberToken)).status, 403);
+assert.equal((await request("site/events", "PATCH", { id: first.id, live: true }, null)).status, 401);
+for (const body of [{ id: first.id }, { id: first.id, live: "true" }, { id: first.id, live: true, recent: null }]) {
+  assert.equal((await request("site/events", "PATCH", body)).status, 400);
+}
+assert.equal((await request("site/events", "PATCH", { id: "missing", live: true })).status, 404);
+assert.equal((await request("collections", "POST", { name: "Invalid live event", live: "true" })).status, 400);
+const liveEvent = await (await request("collections", "POST", { name: "Live summit", recent: false, live: true })).json() as { id: string };
+const liveDay1 = await (await request("collections", "POST", { eventId: liveEvent.id, name: "Live Day 1" })).json() as { id: string };
+const liveDay2 = await (await request("collections", "POST", { eventId: liveEvent.id, name: "Live Day 2" })).json() as { id: string };
+assert.deepEqual(await liveIds(), [liveDay1.id, liveDay2.id].sort());
+assert.ok(!(await recentIds()).includes(liveDay1.id), "Live must not imply recent");
+const scopedLive = await (await request(`collections?event=${liveEvent.id}&live=1`, "GET", undefined, memberToken)).json() as {
+  event: ShowcaseEvent; collections: { id: string }[];
+};
+assert.equal(scopedLive.event.name, "Live summit");
+assert.deepEqual(scopedLive.collections.map((c) => c.id).sort(), [liveDay1.id, liveDay2.id].sort());
+assert.equal((await request(`collections?event=${first.id}&live=1`)).status, 404);
+const recentBefore = await recentIds();
+await request("site/events", "PATCH", { id: first.id, live: true });
+assert.deepEqual(await liveIds(), [first.id, liveDay1.id, liveDay2.id].sort(), "Multiple live events coexist");
+assert.deepEqual(await recentIds(), recentBefore, "Live toggle leaves recent selection unchanged");
+await request("site/events", "PATCH", { id: liveEvent.id, recent: true });
+assert.equal((await events()).find((e) => e.id === liveEvent.id)?.live, true, "Recent toggle preserves live selection");
+await request("site/events", "PUT", { id: liveEvent.id, hidden: true });
+assert.deepEqual(await liveIds(), [first.id]);
+assert.equal((await request(`collections?event=${liveEvent.id}&live=1`, "GET", undefined, memberToken)).status, 404);
+await request("site/events", "PUT", { id: liveEvent.id, hidden: false });
+await request("site/events", "PATCH", { id: liveEvent.id, live: false });
+assert.deepEqual(await liveIds(), [first.id]);
+assert.deepEqual((await eventAlbums(liveEvent.id)).collections.map((c) => c.id).sort(), [liveDay1.id, liveDay2.id].sort(),
+  "Disabling live keeps both folders");
+await request("site/events", "PATCH", { id: liveEvent.id, live: true });
+const liveGroups = await remove(liveEvent.id);
+assert.deepEqual(await liveIds(), [first.id]);
+for (const group of liveGroups) await restoreFromBin(env, group);
+assert.deepEqual(await liveIds(), [first.id, liveDay1.id, liveDay2.id].sort(), "Restoring event retains live flag and folders");
+await request("site/events", "PATCH", { id: first.id, live: false });
+assert.equal(records.get(originalKey), "untouched original bytes");
+console.log("Live events: independent multi-event toggles, legacy defaults, permissions, validation, creation, scoped subfolders, hiding, disabling and restoration passed.");

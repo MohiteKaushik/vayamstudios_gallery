@@ -10,7 +10,7 @@ export function UploadActivityIndicator() {
     <aside
       aria-label="Active photo uploads"
       aria-live="polite"
-      className="fixed bottom-20 right-4 z-30 w-[min(22rem,calc(100vw-2rem))] space-y-2 sm:bottom-5"
+      className="fixed bottom-24 right-4 z-30 w-[min(22rem,calc(100vw-2rem))] space-y-2 lg:bottom-5"
     >
       {uploads.map((upload) => {
         const total = Math.max(1, upload.progress.total);

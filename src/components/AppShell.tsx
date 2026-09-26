@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { House, Images, Layers, Settings2 } from "lucide-react";
+import { House, Images, Layers, Radio, Settings2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { ContactButton } from "@/components/ContactSheet";
 import { Logo } from "@/components/Logo";
@@ -10,6 +10,7 @@ const nav = [
   { to: "/home", label: "Home", icon: House },
   { to: "/photos", label: "Photos", icon: Images },
   { to: "/collections", label: "Recent Events", icon: Layers },
+  { to: "/live-events", label: "Live Events", icon: Radio },
   { to: "/settings", label: "Settings", icon: Settings2 },
 ] as const;
 
@@ -32,7 +33,7 @@ export function AppShell({ children, wide }: { children: ReactNode; wide?: boole
 
 
           <div className="flex items-center gap-2">
-            <nav className="hidden items-center gap-1 sm:flex" aria-label="Primary">
+            <nav className="hidden items-center gap-1 lg:flex" aria-label="Primary">
               {nav.map((item) => (
                 <Link
                   key={item.to}
@@ -50,7 +51,7 @@ export function AppShell({ children, wide }: { children: ReactNode; wide?: boole
 
       <main
         className={cn(
-          "mx-auto w-full px-5 pb-32 pt-8 sm:pb-16",
+          "mx-auto w-full px-5 pb-32 pt-8 lg:pb-16",
           wide ? "max-w-6xl" : "max-w-3xl",
         )}
       >
@@ -60,7 +61,7 @@ export function AppShell({ children, wide }: { children: ReactNode; wide?: boole
 
       <nav
         aria-label="Primary"
-        className="glass-chrome safe-bottom fixed inset-x-0 bottom-0 z-40 border-t sm:hidden"
+        className="glass-chrome safe-bottom fixed inset-x-0 bottom-0 z-40 border-t lg:hidden"
       >
         <div className="mx-auto flex max-w-md items-stretch justify-between px-3 pt-2">
           {nav.map((item) => {
@@ -69,7 +70,7 @@ export function AppShell({ children, wide }: { children: ReactNode; wide?: boole
               <Link
                 key={item.to}
                 to={item.to}
-                className="press flex flex-1 flex-col items-center gap-1 rounded-2xl py-2 text-[0.68rem] text-muted-foreground data-[status=active]:text-foreground"
+                className="press flex min-w-0 flex-1 flex-col items-center gap-1 rounded-2xl py-2 text-center text-[0.68rem] text-muted-foreground data-[status=active]:text-foreground"
               >
                 <Icon className="size-5" strokeWidth={1.6} />
                 {item.label}

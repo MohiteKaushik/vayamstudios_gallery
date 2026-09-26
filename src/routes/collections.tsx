@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { Check, CheckCheck, ChevronLeft, Copy, FolderPlus, Image as ImageIcon, ImagePlus, Layers, Loader2, Pencil, Plus, Radio, RefreshCw, ScanFace, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState, type FormEvent } from "react";
@@ -44,17 +44,18 @@ export const Route = createFileRoute("/collections")({
   component: CollectionsPage,
 });
 
-function CollectionsPage() {
+export function CollectionsPage({ live = false }: { live?: boolean }) {
   const { user } = useRequireAuth();
   const isAdmin = useIsAdmin(user?.id);
   if (!user || isAdmin.isLoading) return null;
-  return <Collections isAdmin={!!isAdmin.data} />;
+  return <Collections key={live ? "live" : "recent"} isAdmin={!!isAdmin.data} live={live} />;
 }
 
-function Collections({ isAdmin }: { isAdmin: boolean }) {
+function Collections({ isAdmin, live }: { isAdmin: boolean; live: boolean }) {
   const { ask, dialog } = useConfirm();
-  const { shared, event } = Route.useSearch();
-  const navigate = Route.useNavigate();
+  const { shared, event } = useSearch({ strict: false });
+  const navigate = useNavigate();
+  const listingTitle = live ? "Live Events" : "Recent Events";
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -62,14 +63,14 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
   const allEvents = (isAdmin && showAll) || !!shared;
 
   const collections = useQuery({
-    queryKey: allEvents ? ["collections"] : ["recent-collections"],
-    queryFn: allEvents ? api.listCollections : api.listRecentCollections,
+    queryKey: live ? ["collections", "live"] : allEvents ? ["collections"] : ["recent-collections"],
+    queryFn: live ? api.listLiveCollections : allEvents ? api.listCollections : api.listRecentCollections,
     enabled: event === undefined,
     retry: false,
   });
   const eventCollections = useQuery({
-    queryKey: ["collections", "event", event],
-    queryFn: () => api.listEventCollections(event!),
+    queryKey: ["collections", "event", event, live ? "live" : "all"],
+    queryFn: () => api.listEventCollections(event!, live),
     enabled: event !== undefined,
     retry: false,
   });
@@ -84,10 +85,10 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
   const eventName = eventCollections.data?.event.name;
   const selectedAlbum = shared;
   const topLevelEvents = (showcase.data ?? []).filter((item) =>
-    isAdmin && showAll ? true : item.recent && !item.hidden);
+    live ? item.live && !item.hidden : isAdmin && showAll ? true : item.recent && !item.hidden);
 
   const create = useMutation({
-    mutationFn: () => api.createCollection(name.trim(), description.trim() || undefined),
+    mutationFn: () => api.createCollection(name.trim(), description.trim() || undefined, !live, live),
     onSuccess: (created) => {
       setName("");
       setDescription("");
@@ -116,11 +117,11 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
   });
 
   // Do not fall back to unrelated albums for a missing event or a mismatched shared link.
-  if (event !== undefined && (listing.isLoading || listing.isError || (shared && albums && !albums.some((c) => c.id === shared)))) {
+  if ((event !== undefined || (live && shared)) && (listing.isLoading || listing.isError || (shared && albums && !albums.some((c) => c.id === shared)))) {
     return <AppShell>
       <button onClick={() => navigate({ to: ".", search: { shared: undefined } })}
         className="mb-5 inline-flex items-center gap-1 text-sm text-muted-foreground">
-        <ChevronLeft className="size-4" /> Recent Events
+        <ChevronLeft className="size-4" /> {listingTitle}
       </button>
       {listing.isLoading ? <Shimmer className="h-40" /> : <EmptyState tone="error"
         icon={<Layers className="size-7" />} title="Event unavailable"
@@ -138,7 +139,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
           onClick={() => navigate({ to: ".", search: { shared: undefined, ...(backToEvent ? { event } : {}) } })}
           className="press mb-5 inline-flex items-center gap-1 rounded-full text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <ChevronLeft className="size-4" /> {backToEvent ? eventName : "Recent Events"}
+          <ChevronLeft className="size-4" /> {backToEvent ? eventName : listingTitle}
         </button>
         {isAdmin ? (
           <AdminCollection key={selectedAlbum} collectionId={selectedAlbum} name={current?.name ?? "Collection"}
@@ -157,10 +158,10 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
     <AppShell>
       {event !== undefined && <button onClick={() => navigate({ to: ".", search: { shared: undefined } })}
         className="mb-5 inline-flex items-center gap-1 text-sm text-muted-foreground">
-        <ChevronLeft className="size-4" /> Recent Events
+        <ChevronLeft className="size-4" /> {listingTitle}
       </button>}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="break-words text-3xl font-semibold tracking-[-0.03em]">{eventName ?? "Recent Events"}</h1>
+        <h1 className="break-words text-3xl font-semibold tracking-[-0.03em]">{eventName ?? listingTitle}</h1>
         {isAdmin && event !== undefined && <SubfolderDialog eventId={event} />}
       </div>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
@@ -205,7 +206,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
       )}
 
       <section className="mt-9">
-        {isAdmin && event === undefined && <label className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
+        {isAdmin && !live && event === undefined && <label className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
           <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} className="size-4" />
           Show all events (admin)
         </label>}
@@ -317,7 +318,7 @@ function Collections({ isAdmin }: { isAdmin: boolean }) {
         ) : (
           <EmptyState
             icon={<Layers className="size-7" strokeWidth={1.5} />}
-            title={event !== undefined ? "No subfolders yet" : "No events yet"}
+            title={event !== undefined ? "No subfolders yet" : live ? "No live events yet" : "No events yet"}
             description={
               event !== undefined
                 ? isAdmin ? "Create the first subfolder for this event." : "No photo folders have been published for this event yet."
@@ -392,7 +393,7 @@ function PhotoPageLoader({
 }
 
 function SubfolderDialog({ eventId, compact = false }: { eventId: string; compact?: boolean }) {
-  const navigate = Route.useNavigate();
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -833,7 +834,7 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
                     .then(() => {
                       qc.invalidateQueries({ queryKey: ["home-cover"] });
                       toast.success("Home cover updated", {
-                        description: "It now shows, blurred, behind Open recent events.",
+                        description: "It now shows, blurred, behind Open Live Event.",
                       });
                     })
                     .catch((e) => toast.error(e instanceof Error ? e.message : "Could not set the cover"));
