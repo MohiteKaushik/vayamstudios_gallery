@@ -5,6 +5,7 @@ import { ContactButton } from "@/components/ContactSheet";
 import { Logo } from "@/components/Logo";
 import { cn } from "@/lib/utils";
 import { UploadActivityIndicator } from "@/components/UploadActivityIndicator";
+import { useLiveEventsAvailable } from "@/lib/live-events";
 
 const nav = [
   { to: "/home", label: "Home", icon: House },
@@ -16,6 +17,8 @@ const nav = [
 
 export function AppShell({ children, wide }: { children: ReactNode; wide?: boolean }) {
   const navigate = useNavigate();
+  const liveEventsAvailable = useLiveEventsAvailable();
+  const visibleNav = nav.filter((item) => item.to !== "/live-events" || liveEventsAvailable);
 
   return (
     <div className="relative min-h-dvh">
@@ -34,7 +37,7 @@ export function AppShell({ children, wide }: { children: ReactNode; wide?: boole
 
           <div className="flex items-center gap-2">
             <nav className="hidden items-center gap-1 lg:flex" aria-label="Primary">
-              {nav.map((item) => (
+              {visibleNav.map((item) => (
                 <Link
                   key={item.to}
                   to={item.to}
@@ -64,7 +67,7 @@ export function AppShell({ children, wide }: { children: ReactNode; wide?: boole
         className="glass-chrome safe-bottom fixed inset-x-0 bottom-0 z-40 border-t lg:hidden"
       >
         <div className="mx-auto flex max-w-md items-stretch justify-between px-3 pt-2">
-          {nav.map((item) => {
+          {visibleNav.map((item) => {
             const Icon = item.icon;
             return (
               <Link

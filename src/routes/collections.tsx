@@ -834,7 +834,7 @@ function AdminCollection({ collectionId, name, eventId }: { collectionId: string
                     .then(() => {
                       qc.invalidateQueries({ queryKey: ["home-cover"] });
                       toast.success("Home cover updated", {
-                        description: "It now shows, blurred, behind Open Live Event.",
+                        description: "It now shows, blurred, behind the home event card.",
                       });
                     })
                     .catch((e) => toast.error(e instanceof Error ? e.message : "Could not set the cover"));

@@ -10,21 +10,21 @@ import {
   ANALYSIS_MAX_EDGE,
   MAX_REFERENCES,
   MIN_FACE_PX,
+  REFERENCE_MIN_SCORE,
   averageDescriptors,
   detectFaces,
 } from "./face";
 import { canvasToBlob, downscale, fileToImage, mirror } from "./images";
 import { api } from "./api";
+import { startAutoScan } from "./auto-scan";
 
 export type EnrolResult = { error: string | null; references?: number };
 
 /**
  * Reads a selfie, checks it is usable, and stores the references.
  *
- * The quality gates are worth being strict about. A blurred or tiny face
- * produces an embedding that is confidently wrong, and every later search is
- * measured against it, so one bad enrolment quietly ruins every scan the member
- * ever runs. Better to refuse the photo than to accept it and be wrong later.
+ * Accept a moderately imperfect photo when the detector still finds one
+ * usable face. Very small or uncertain detections remain unreliable.
  */
 export async function enrolFace(file: File): Promise<EnrolResult> {
   const img = await fileToImage(file);
@@ -42,8 +42,8 @@ export async function enrolFace(file: File): Promise<EnrolResult> {
   if (Math.min(face.box.width, face.box.height) < MIN_FACE_PX) {
     return { error: "Your face is too small in this photo. Use a closer, front-facing shot." };
   }
-  if (face.score < 0.75) {
-    return { error: "That photo isn't clear enough. Try better lighting and look at the camera." };
+  if (face.score < REFERENCE_MIN_SCORE) {
+    return { error: "We couldn't read your face clearly enough in this photo. Try another with your face visible." };
   }
 
   // Three readings of one selfie: the original, its mirror, and the average of
@@ -62,6 +62,7 @@ export async function enrolFace(file: File): Promise<EnrolResult> {
     // The crop is a convenience for the team, not part of enrolling, so a
     // failure here must not cost the member their face profile.
     await sendReferenceCrop(analysis.canvas, face.box).catch(() => undefined);
+    void startAutoScan(undefined, true);
     return { error: null, references: saved.references };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Could not save your face profile" };

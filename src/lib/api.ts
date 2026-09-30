@@ -237,10 +237,10 @@ export const api = {
       body: JSON.stringify({ references, imageKey }),
     }),
 
-  scan: (collectionId: string) =>
+  scan: (collectionId: string, background = false) =>
     call<ScanResult>("/api/scan", {
       method: "POST",
-      body: JSON.stringify({ collectionId }),
+      body: JSON.stringify({ collectionId, background }),
     }),
 
   cachedScan: (collectionId: string) => call<ScanResult>(`/api/scan/${collectionId}`),

@@ -11,6 +11,7 @@ try {
   // Exercise the actual routes with isolated API responses; never modify gallery data.
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, colorScheme: "dark" });
   let role = "admin";
+  let faceDeletes = 0;
   const events = [
     { id: "summit", name: "TTPOC Career Nexus 3.0", recent: true, live: false, collectionIds: ["day1", "day2"] },
     { id: "connect", name: "Ioniq Connect", recent: false, live: false, collectionIds: ["connect-day"] },
@@ -31,6 +32,10 @@ try {
       id: "test-admin", email: "admin@example.test", fullName: "Test admin", phone: "",
       role, onboarded: true, createdAt: 0, lastSignInAt: 0,
     });
+    if (url.pathname === "/api/face-profile" && req.method() === "DELETE") {
+      faceDeletes += 1;
+      return reply({ ok: true, clearedScans: 0 });
+    }
     if (url.pathname === "/api/site/events") {
       if (req.method() === "PATCH") {
         const body = req.postDataJSON();
@@ -69,8 +74,9 @@ try {
   });
   const page = await context.newPage();
   await page.goto(base + "/home");
-  await page.getByRole("heading", { name: "Live Events", exact: true }).waitFor();
-  assert.equal(await page.getByRole("link", { name: "Open Live Event", exact: true }).getAttribute("target"), "_blank");
+  await page.getByRole("heading", { name: "Recent Events", exact: true }).waitFor();
+  assert.equal(await page.getByRole("link", { name: "Live Events", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("link", { name: "Open Recent Events", exact: true }).getAttribute("href"), "/collections");
   for (const event of events.slice(0, 2)) {
     const toggle = page.getByRole("switch", { name: "Show " + event.name + " in live events", exact: true });
     await toggle.click();
@@ -80,6 +86,9 @@ try {
   }
   assert.equal(events[0].recent, true);
   assert.equal(events[1].recent, false);
+  await page.getByRole("heading", { name: "Live Events", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Live Events", exact: true }).waitFor();
+  assert.equal(await page.getByRole("link", { name: "Open Live Event", exact: true }).getAttribute("target"), "_blank");
   await page.screenshot({ path: ".test-output/live-admin-desktop.png", fullPage: true, animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
   const connectToggle = page.getByRole("switch", { name: "Show Ioniq Connect in live events", exact: true });
@@ -89,6 +98,13 @@ try {
   await page.waitForFunction(() => document.querySelector('[aria-label="Show Ioniq Connect in live events"]')?.getAttribute("aria-checked") === "true");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.screenshot({ path: ".test-output/live-admin-mobile.png", fullPage: true, animations: "disabled" });
+  await page.goto(base + "/settings");
+  await page.getByRole("button", { name: "Replace reference face" }).click();
+  await page.getByRole("dialog", { name: "Replace your reference photo" }).waitFor();
+  assert.equal(faceDeletes, 0);
+  await page.getByRole("button", { name: "Keep current photo" }).click();
+  assert.equal(await page.getByRole("dialog", { name: "Replace your reference photo" }).count(), 0);
+  await page.goto(base + "/home");
   await page.setViewportSize({ width: 1440, height: 1000 });
   const popupPromise = context.waitForEvent("page");
   await page.getByRole("link", { name: "Open Live Event", exact: true }).click();
@@ -133,7 +149,7 @@ try {
     assert.equal(await live.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   }
   assert.deepEqual(errors, []);
-  console.log("Live Events browser checks passed: admin multi-toggle, new-tab CTA, main events -> subfolders -> photos, subfolder creation, independent Recent Events, member access, desktop/mobile layout, no page errors.");
+  console.log("Live Events browser checks passed: conditional navigation, admin multi-toggle, new-tab CTA, settings replacement picker without deletion, subfolders, member access, desktop/mobile layout, no page errors.");
 } finally {
   await browser.close();
 }

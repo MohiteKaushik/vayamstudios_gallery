@@ -1373,21 +1373,13 @@ async function signedIn(
  * asked us to forget.
  */
 async function forgetFace(env: MediaEnv, member: MemberRecord): Promise<Response> {
+  const clearedScans = await clearMemberScans(env, member.id);
   await putMember(env.PHOTOS, {
     ...member,
     references: [],
     referenceImageKey: null,
     onboarded: false,
   });
-
-  const stale: string[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await env.PHOTOS.list({ prefix: `scan/${member.id}/`, cursor, limit: 1000 });
-    for (const o of page.objects) stale.push(o.key);
-    cursor = page.truncated ? page.cursor : undefined;
-  } while (cursor);
-  if (stale.length) await env.PHOTOS.delete(stale);
 
   // The reference crop goes with the profile it belongs to. It is the only
   // photograph of the member the app holds, and "remove my face profile" has to
@@ -1406,7 +1398,19 @@ async function forgetFace(env: MediaEnv, member: MemberRecord): Promise<Response
   } while (waitingCursor);
   if (waitingRows.length) await env.PHOTOS.delete(waitingRows);
 
-  return json({ ok: true, clearedScans: stale.length });
+  return json({ ok: true, clearedScans });
+}
+
+async function clearMemberScans(env: MediaEnv, userId: string): Promise<number> {
+  const stale: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.PHOTOS.list({ prefix: `scan/${userId}/`, cursor, limit: 1000 });
+    for (const o of page.objects) stale.push(o.key);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  if (stale.length) await env.PHOTOS.delete(stale);
+  return stale.length;
 }
 
 /* --------------------------------- members -------------------------------- */
@@ -1755,6 +1759,7 @@ async function saveFaceProfile(
   const member = await getMemberById(env.PHOTOS, userId);
   if (!member) return json({ error: "No such member" }, 401);
 
+  if (member.onboarded) await clearMemberScans(env, userId);
   await putMember(env.PHOTOS, {
     ...member,
     references,
@@ -1974,7 +1979,7 @@ async function adminPhotoSearch(request: Request, env: MediaEnv): Promise<Respon
  * their confidence rather than silently discarded.
  */
 async function runScan(request: Request, env: MediaEnv, userId: string): Promise<Response> {
-  let body: { collectionId?: string };
+  let body: { collectionId?: string; background?: boolean };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -2002,7 +2007,7 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
     // They asked, which is the fact the team needs, whether or not they got as
     // far as giving us a face.
     const named = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(cid));
-    await noteWaiting(env, member, cid, named?.name ?? cid, false).catch(() => undefined);
+    if (body.background !== true) await noteWaiting(env, member, cid, named?.name ?? cid, false).catch(() => undefined);
     return json({
       error: member.references.length
         ? "Your reference photo was taken with the old recogniser. Please add it again."
@@ -2117,14 +2122,13 @@ async function runScan(request: Request, env: MediaEnv, userId: string): Promise
   };
   await writeJson(env.PHOTOS, scanKey(userId, cid), record);
 
-  // The team needs to know who is still waiting while the event is running, not
-  // afterwards. Written on the way out of the scan so the console is current
-  // within a second of someone pressing Find me.
-  if (hits.length === 0) {
+  // Background scans must not imply the member asked about every event.
+  // A match can still clear an older waiting entry for this event.
+  if (hits.length > 0) {
+    await clearWaiting(env, userId, cid);
+  } else if (body.background !== true) {
     const named = await readJson<CollectionRecord>(env.PHOTOS, collectionKey(cid));
     await noteWaiting(env, member, cid, named?.name ?? cid, true).catch(() => undefined);
-  } else {
-    await clearWaiting(env, userId, cid);
   }
 
   return json(record);

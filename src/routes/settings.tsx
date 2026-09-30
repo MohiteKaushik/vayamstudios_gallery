@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
+import { FaceEnrolSheet } from "@/components/FaceEnrolSheet";
 import { GlassButton, GlassCard, useConfirm } from "@/components/ui-kit";
 import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/auth-gate";
@@ -33,6 +34,7 @@ function Settings({ userId, email }: { userId: string; email: string }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
+  const [replacingFace, setReplacingFace] = useState(false);
 
   async function resetFace() {
     setBusy("face");
@@ -95,7 +97,7 @@ function Settings({ userId, email }: { userId: string; email: string }) {
           you can remove it at any time.
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
-          <GlassButton variant="quiet" size="sm" loading={busy === "face"} onClick={resetFace}>
+          <GlassButton variant="quiet" size="sm" onClick={() => setReplacingFace(true)}>
             Replace reference face
           </GlassButton>
           <GlassButton variant="danger" size="sm" loading={busy === "all"} onClick={deleteAll}>
@@ -111,6 +113,18 @@ function Settings({ userId, email }: { userId: string; email: string }) {
         </GlassButton>
       </Section>
       {dialog}
+      {replacingFace && (
+        <FaceEnrolSheet
+          replacing
+          onClose={() => setReplacingFace(false)}
+          onDone={() => {
+            void qc.invalidateQueries({ queryKey: ["face-profile", userId] });
+            void qc.invalidateQueries({ queryKey: ["my-photos", userId] });
+            void qc.invalidateQueries({ queryKey: ["scan"] });
+            setReplacingFace(false);
+          }}
+        />
+      )}
     </AppShell>
   );
 }

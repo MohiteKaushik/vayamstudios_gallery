@@ -21,9 +21,11 @@ import { onEngineProgress } from "@/lib/face";
 export function FaceEnrolSheet({
   onClose,
   onDone,
+  replacing = false,
 }: {
   onClose: () => void;
   onDone: () => void;
+  replacing?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   // The recogniser is about 16 MB and downloads the first time anyone uses it.
@@ -63,7 +65,7 @@ export function FaceEnrolSheet({
       const { error } = await enrolFace(file);
       if (error) toast.error(error);
       else {
-        toast.success("Face profile saved");
+        toast.success(replacing ? "Reference photo replaced" : "Face profile saved");
         onDone();
       }
     } catch (e) {
@@ -77,7 +79,7 @@ export function FaceEnrolSheet({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Add a reference photo of yourself"
+      aria-label={replacing ? "Replace your reference photo" : "Add a reference photo of yourself"}
       className="fixed inset-0 z-[60] flex items-end justify-center bg-black/50 px-5 pb-5 backdrop-blur-sm sm:items-center sm:pb-0"
       onClick={() => !busy && onClose()}
     >
@@ -88,12 +90,12 @@ export function FaceEnrolSheet({
         <div className="flex flex-col items-center text-center">
           <ScanFace className="mb-4 size-8" strokeWidth={1.4} />
           <h2 className="text-lg font-semibold tracking-[-0.02em]">
-            A photo of you, so we know who to look for
+            {replacing ? "Replace your reference photo" : "A photo of you, so we know who to look for"}
           </h2>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-            A clear, front-facing shot works best. It is analysed on your device, and a small crop
-            is kept so the team can find you if you have not been photographed yet. You can replace
-            or remove it any time from Settings.
+            {replacing
+              ? "Choose a photo with your face visible. Your current reference stays in place until the new one is saved."
+              : "A front-facing shot works best. It is analysed on your device, and a small crop is kept so the team can find you if you have not been photographed yet. You can replace or remove it any time from Settings."}
           </p>
         </div>
 
@@ -103,14 +105,20 @@ export function FaceEnrolSheet({
           accept="image/*"
           capture="user"
           className="hidden"
-          onChange={(e) => pick(e.target.files?.[0])}
+          onChange={(e) => {
+            void pick(e.target.files?.[0]);
+            e.target.value = "";
+          }}
         />
         <input
           ref={libraryRef}
           type="file"
           accept="image/*"
           className="hidden"
-          onChange={(e) => pick(e.target.files?.[0])}
+          onChange={(e) => {
+            void pick(e.target.files?.[0]);
+            e.target.value = "";
+          }}
         />
 
         <div className="mt-6 space-y-2">
@@ -142,7 +150,7 @@ export function FaceEnrolSheet({
             disabled={busy}
             className="press w-full rounded-full py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-40"
           >
-            Not now
+            {replacing ? "Keep current photo" : "Not now"}
           </button>
         </div>
       </div>

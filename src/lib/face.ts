@@ -105,6 +105,9 @@ export const ANALYSIS_MAX_EDGE = 2048;
 /** Faces smaller than this (px, on the analysis canvas) give unreliable embeddings. */
 export const MIN_FACE_PX = 60;
 
+/** Reference photos can be imperfect, but low-confidence detections remain unreliable. */
+export const REFERENCE_MIN_SCORE = 0.5;
+
 /** Boxes overlapping more than this are treated as the same face across passes. */
 const DEDUPE_IOU = 0.35;
 

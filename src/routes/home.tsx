@@ -12,6 +12,7 @@ import { useRequireAuth } from "@/lib/auth-gate";
 import { formatCount } from "@/lib/images";
 import { useIsAdmin } from "@/lib/roles";
 import { cn } from "@/lib/utils";
+import { useLiveEventsAvailable } from "@/lib/live-events";
 
 export const Route = createFileRoute("/home")({
   head: () => ({
@@ -34,6 +35,7 @@ function HomePage() {
 function Home({ userId }: { userId: string }) {
   const qc = useQueryClient();
   const isAdmin = useIsAdmin(userId);
+  const liveEventsAvailable = useLiveEventsAvailable();
   // Whether this member has enrolled comes from their own record now.
   const profile = useQuery({
     queryKey: ["face-profile", userId],
@@ -101,17 +103,19 @@ function Home({ userId }: { userId: string }) {
     return (
       <AppShell>
         <section className="rise-in">
-          <h1 className="text-3xl font-semibold tracking-[-0.03em]">Live Events</h1>
+          <h1 className="text-3xl font-semibold tracking-[-0.03em]">{liveEventsAvailable ? "Live Events" : "Recent Events"}</h1>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
             Create an event, then upload the photos. Members see only the frames they appear in.
           </p>
-          <Link to="/live-events" search={{ shared: undefined }} target="_blank" rel="noopener noreferrer" className="mt-8 inline-flex">
+          <Link to={liveEventsAvailable ? "/live-events" : "/collections"} search={{ shared: undefined }}
+            {...(liveEventsAvailable ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+            className="mt-8 inline-flex">
             <GlassButton size="lg" icon={<Layers className="size-4" />}>
-              Open Live Event
+              {liveEventsAvailable ? "Open Live Event" : "Open Recent Events"}
             </GlassButton>
           </Link>
         </section>
-        <CoverSettings />
+        <CoverSettings liveEventsAvailable={liveEventsAvailable} />
         {collectionList}
         <EventShowcase editable />
         <AdminPhotoTools />
@@ -131,14 +135,14 @@ function Home({ userId }: { userId: string }) {
   // reason for it is obvious, and Settings can change it afterwards.
   return (
     <AppShell>
-      <FaceCard />
+      <FaceCard liveEventsAvailable={liveEventsAvailable} />
       <EventShowcase />
     </AppShell>
   );
 }
 
 
-function FaceCard() {
+function FaceCard({ liveEventsAvailable }: { liveEventsAvailable: boolean }) {
   return (
     <section className="rise-in">
       <div className="mb-8 flex items-center gap-4">
@@ -153,8 +157,9 @@ function FaceCard() {
         </div>
       </div>
 
-      <Link to="/live-events" search={{ shared: undefined }} target="_blank" rel="noopener noreferrer">
-        <RecentEventCard />
+      <Link to={liveEventsAvailable ? "/live-events" : "/collections"} search={{ shared: undefined }}
+        {...(liveEventsAvailable ? { target: "_blank", rel: "noopener noreferrer" } : {})}>
+        <RecentEventCard liveEventsAvailable={liveEventsAvailable} />
       </Link>
     </section>
   );
@@ -165,7 +170,7 @@ function useHomeCover() {
 }
 
 /** The card that opens the event, over a blurred photo the admin chose. */
-function RecentEventCard() {
+function RecentEventCard({ liveEventsAvailable }: { liveEventsAvailable: boolean }) {
   const cover = useHomeCover().data?.coverUrl;
   return (
     <GlassCard interactive className="relative isolate flex flex-col items-center overflow-hidden px-6 py-14 text-center">
@@ -182,7 +187,7 @@ function RecentEventCard() {
       )}
       <Layers className={cn("mb-5 size-8", cover ? "text-foreground/80" : "text-muted-foreground")} strokeWidth={1.4} />
       <p className={cn("text-lg font-medium tracking-[-0.02em]", cover && "drop-shadow-[0_1px_8px_rgba(0,0,0,0.65)]")}>
-        Open Live Event
+        {liveEventsAvailable ? "Open Live Event" : "Open Recent Events"}
       </p>
       <p className={cn("mt-1 text-sm", cover ? "text-foreground/80" : "text-muted-foreground")}>
         Photos are published by the organisers
@@ -192,7 +197,7 @@ function RecentEventCard() {
 }
 
 /** Admin: what members see at the top of their home page, and how to change it. */
-function CoverSettings() {
+function CoverSettings({ liveEventsAvailable }: { liveEventsAvailable: boolean }) {
   const qc = useQueryClient();
   const cover = useHomeCover();
   return (
@@ -203,7 +208,7 @@ function CoverSettings() {
           ? "Members see this at the top of their home page. To change it, open an event, select one photo and press Use as home cover."
           : "No cover yet. Open an event, select one photo and press Use as home cover."}
       </p>
-      <RecentEventCard />
+      <RecentEventCard liveEventsAvailable={liveEventsAvailable} />
       {cover.data?.coverUrl && (
         <div className="mt-3 flex justify-end">
           <GlassButton

@@ -101,6 +101,11 @@ const photos = [
   { photoId: pid, fileName: "../photo.jpg", fullUrl: `/media/p/${cid}/${pid}` },
   { photoId: missing, fileName: "../photo.jpg", fullUrl: `/media/p/${cid}/${missing}` },
 ];
+const samePhotoIdInAnotherEvent = {
+  photoId: pid,
+  fileName: "another-event.jpg",
+  fullUrl: `/media/p/${crypto.randomUUID()}/${pid}`,
+};
 const fetcher: typeof fetch = async () => new Response(bytes, { headers: { "content-type": "image/jpeg" } });
 const signal = new AbortController().signal;
 const saved = await downloadPhotos([...photos, photos[0]!], directory, "../Person/Event", signal, () => {}, fetcher);
@@ -111,6 +116,8 @@ const zipped = await downloadPhotos(photos, null, "Person", signal, () => {}, fe
 const unpacked = unzipSync(new Uint8Array(await zipped.blob!.arrayBuffer()));
 assert.equal(Object.keys(unpacked).length, 2);
 for (const value of Object.values(unpacked)) assert.deepEqual(value, bytes);
+const combinedEvents = await downloadPhotos([...photos, photos[0]!, samePhotoIdInAnotherEvent], null, "Member", signal, () => {}, fetcher);
+assert.equal(combinedEvents.saved, 3, "The same photo id in different event URLs must not be discarded");
 const failedFetch: typeof fetch = async () => new Response("missing", { status: 404 });
 assert.equal((await downloadPhotos(photos, directory, "Person", signal, () => {}, failedFetch)).failed.length, 2);
 await assert.rejects(downloadPhotos(photos, null, "Person", signal, () => {}, failedFetch));

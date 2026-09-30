@@ -28,7 +28,9 @@ export async function downloadPhotos(
   progress: (saved: number, total: number) => void,
   fetcher: typeof fetch = fetch,
 ): Promise<DownloadResult> {
-  const unique = [...new Map(photos.map((photo) => [photo.photoId, photo])).values()];
+  // A member's Photos tab combines several events. The media URL carries both
+  // collection and photo ids, so it is the reliable cross-event identity.
+  const unique = [...new Map(photos.map((photo) => [photo.fullUrl, photo])).values()];
   const folder = `Vayam-${safeFileName(label)}-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
   const result: DownloadResult = { saved: 0, failed: [], folder };
   if (!unique.length) return result;

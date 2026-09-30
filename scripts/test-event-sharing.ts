@@ -9,7 +9,7 @@ const admin = crypto.randomUUID(), member = crypto.randomUUID(), album = crypto.
 const ids = Array.from({ length: 45 }, () => crypto.randomUUID());
 const data = new Map<string, unknown>([
   [`meta/member/${admin}`, { id: admin, role: "admin" }],
-  [`meta/member/${member}`, { id: member, role: "member" }],
+  [`meta/member/${member}`, { id: member, role: "member", references: [], fullName: "Member", email: "member@example.test", phone: "" }],
   [`meta/collection/${album}`, { id: album, name: "Day one", createdAt: 1, createdBy: "PRIVATE" }],
   [`meta/collection/${other}`, { id: other, name: "Other", showcaseEventId: other, createdAt: 1 }],
 ]);
@@ -80,6 +80,12 @@ assert.equal((await request(preview)).status, 200);
 data.delete(`meta/photo/${album}/${ids[0]}`);
 assert.equal((await request(preview)).status, 404);
 assert.equal((await request("scan", "POST")).status, 401);
+assert.equal((await request("scan", "POST", memberToken, { collectionId: album, background: true })).status, 400);
+assert.equal([...data.keys()].filter((key) => key.startsWith(`waiting/${album}/`)).length, 0,
+  "Automatic scans must not add members to an event's waiting list");
+assert.equal((await request("scan", "POST", memberToken, { collectionId: album })).status, 400);
+assert.equal([...data.keys()].filter((key) => key.startsWith(`waiting/${album}/`)).length, 1,
+  "An intentional Find me attempt still records a waiting member");
 assert.equal((await handleMediaRequest(new Request(`https://local/media/p/${album}/${ids[1]}`), env))!.status, 401);
 assert.equal(safeShareReturn(shared.path), shared.path);
 for (const value of ["//evil.test", "https://evil.test", "/home", shared.path + "?redirect=//evil.test"]) assert.equal(safeShareReturn(value), null);
