@@ -43,8 +43,16 @@ try {
       id: "member-test", email: "member@example.test", fullName: "Test Member", phone: "",
       role: "member", onboarded: true, createdAt: 0, lastSignInAt: 0,
     });
+    if (url.pathname === "/api/collections" && url.searchParams.has("event")) return reply({
+      event: { id: ids.event1, name: "Test Event", recent: true, live: true, collectionIds: [ids.event1] },
+      collections: [{ id: ids.event1, name: "Day 1", photoCount: 2 }],
+    });
     if (url.pathname === "/api/collections") return reply({ collections: [
       { id: ids.event1, name: "Day 1" }, { id: ids.event2, name: "Day 2" },
+    ] });
+    if (url.pathname === `/api/collections/${ids.event1}/photos`) return reply({ photos: [
+      photo(ids.event1, ids.photo1, "portrait-one.jpg"),
+      photo(ids.event1, ids.photo2, "portrait-two.jpg"),
     ] });
     const scan = url.pathname.match(/^\/api\/scan\/(.+)$/)?.[1];
     if (scan === ids.event1) return reply({ scannedAt: 1, possible: [], facesSearched: 1, hits: [
@@ -80,16 +88,61 @@ try {
   assert.ok((await page.locator("body").innerText()).trim().length > 0);
   await page.screenshot({ path: ".test-output/member-download-desktop.png", fullPage: true, animations: "disabled" });
 
+  await page.evaluate(() => { window.__memberDownloadTest.files = []; window.__memberDownloadTest.bytes = 0; });
+  await hold(page.locator('[role="button"].group.press').first());
+  await page.getByRole("toolbar", { name: "Selected photos" }).waitFor();
+  await page.getByText("1 photo selected", { exact: true }).waitFor();
+  await page.locator('[role="button"].group.press').nth(1).click();
+  await page.getByText("2 photos selected", { exact: true }).waitFor();
+  await page.getByRole("toolbar", { name: "Selected photos" }).getByRole("button", { name: "Download" }).click();
+  await page.getByRole("heading", { name: "Download selected photos?" }).waitFor();
+  await page.getByRole("button", { name: "Download 2" }).click();
+  await page.getByText("All 2 photos downloaded.", { exact: false }).waitFor();
+  const selectedSaved = await page.evaluate(() => window.__memberDownloadTest);
+  assert.equal(selectedSaved.files.length, 2, "Only the two selected originals should download");
+  await page.getByRole("button", { name: "Exit photo selection" }).click();
+  assert.equal(await page.getByRole("toolbar", { name: "Selected photos" }).count(), 0);
+
+  for (const path of [
+    `/collections?event=${ids.event1}&shared=${ids.event1}`,
+    `/live-events?event=${ids.event1}&shared=${ids.event1}`,
+  ]) {
+    await page.goto(base + path);
+    await page.getByRole("heading", { name: "Day 1" }).waitFor();
+    await hold(page.locator('[role="button"].group.press').first());
+    await page.getByRole("toolbar", { name: "Selected photos" }).waitFor();
+    await page.getByRole("button", { name: "Exit photo selection" }).click();
+  }
+
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.reload();
+  await page.goto(base + "/photos");
+  await hold(page.locator('[role="button"].group.press').first());
+  await page.getByRole("toolbar", { name: "Selected photos" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Select all" }).count(), 0, "Compact mobile toolbar hides the optional action");
+  await page.screenshot({ path: ".test-output/member-selection-mobile.png", fullPage: true, animations: "disabled" });
+  await page.getByRole("button", { name: "Exit photo selection" }).click();
   await page.getByRole("button", { name: "Download all", exact: true }).click();
   await page.getByRole("alertdialog").waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   await page.screenshot({ path: ".test-output/member-download-mobile.png", fullPage: true, animations: "disabled" });
   assert.deepEqual(errors, []);
-  console.log("Member download browser checks passed: top-right action, privacy warning, folder selection, three original files across two events, completion feedback, desktop/mobile layout, no page errors.");
+  console.log("Member download browser checks passed: long-press selection in Photos/Recent/Live, exact selected originals, top toolbar, download-all, privacy warning, and mobile layout.");
 } finally {
   await browser.close();
+}
+
+async function hold(locator) {
+  await locator.dispatchEvent("pointerdown", { pointerType: "touch", pointerId: 1, clientX: 40, clientY: 40, button: 0 });
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  await locator.dispatchEvent("pointerup", { pointerType: "touch", pointerId: 1, clientX: 40, clientY: 40, button: 0 });
+}
+
+function photo(collectionId, photoId, fileName) {
+  return {
+    id: photoId, fileName, createdAt: 1, width: 1200, height: 800,
+    thumbUrl: "/vayam-logo-white.png",
+    fullUrl: `/media/p/${collectionId}/${photoId}`,
+  };
 }
 
 function hit(collectionId, photoId, fileName, confidence) {

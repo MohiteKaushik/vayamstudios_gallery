@@ -7,6 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { ScanProgress } from "@/components/ScanProgress";
 import { PhotoGrid, PhotoGridSkeleton, type GridPhoto } from "@/components/PhotoGrid";
 import { PagedPhotoGrid } from "@/components/PagedPhotoGrid";
+import { PhotoSelectionToolbar } from "@/components/PhotoSelectionToolbar";
 import { stablePhotoPages } from "@/lib/photo-pages";
 import { PhotoViewer } from "@/components/PhotoViewer";
 import { FaceEnrolSheet } from "@/components/FaceEnrolSheet";
@@ -23,6 +24,7 @@ import { confirmEventDeletion } from "@/lib/confirm-event-deletion";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { beginPhotoUpload, useUploadActivity } from "@/lib/upload-activity";
 import type { PhotoEdits } from "@/lib/photo-edits";
+import { usePhotoSelection } from "@/lib/photo-selection";
 
 const PhotoUploadEditor = lazy(() => import("@/components/PhotoUploadEditor"));
 
@@ -1029,7 +1031,10 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
   const loadedPhotos = photoPages.flatMap((page) => page.photos);
   const everything: GridPhoto[] = loadedPhotos.map(toGridPhoto);
   const grid: GridPhoto[] = view === "mine" ? hits.map(toGridHit) : everything;
+  const selection = usePhotoSelection(grid);
   const hasScanned = (results.data?.scannedAt ?? 0) > 0;
+
+  useEffect(() => selection.clear(), [collectionId, view, selection.clear]);
 
   return (
     <>
@@ -1064,6 +1069,14 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
         </div>
       </div>
 
+      <PhotoSelectionToolbar
+        photos={selection.selectedPhotos}
+        total={grid.length}
+        label={name}
+        onClear={selection.clear}
+        onSelectAll={selection.selectAll}
+      />
+
       {scanning && (
         <div className="mb-6">
           <ScanProgress
@@ -1088,6 +1101,10 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
             <PagedPhotoGrid
               pages={photoPages.map((page) => ({ ...page, photos: page.photos.map(toGridPhoto) }))}
               onOpen={setOpen}
+              selected={selection.selected}
+              onToggleSelect={selection.toggle}
+              selectionMode={selection.active}
+              onLongPress={selection.start}
             />
             <PhotoPageLoader
               hasNextPage={allPhotos.hasNextPage}
@@ -1117,7 +1134,15 @@ function MemberCollection({ collectionId, name }: { collectionId: string; name: 
           }
         />
       ) : (
-        <PhotoGrid photos={grid} onOpen={setOpen} showConfidence />
+        <PhotoGrid
+          photos={grid}
+          onOpen={setOpen}
+          selected={selection.selected}
+          onToggleSelect={selection.toggle}
+          selectionMode={selection.active}
+          onLongPress={selection.start}
+          showConfidence
+        />
       )}
 
       {open !== null && (

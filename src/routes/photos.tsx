@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AppShell } from "@/components/AppShell";
 import { FaceEnrolSheet } from "@/components/FaceEnrolSheet";
 import { PhotoGrid, PhotoGridSkeleton, type GridPhoto } from "@/components/PhotoGrid";
+import { PhotoSelectionToolbar } from "@/components/PhotoSelectionToolbar";
 import { PhotoViewer } from "@/components/PhotoViewer";
 import { EmptyState, GlassButton } from "@/components/ui-kit";
 import {
@@ -22,7 +23,8 @@ import { api } from "@/lib/api";
 import { autoScanSnapshot, startAutoScan, subscribeAutoScan } from "@/lib/auto-scan";
 import { useRequireAuth } from "@/lib/auth-gate";
 import { formatCount } from "@/lib/images";
-import { choosePhotoDirectory, downloadPhotos } from "@/lib/photo-download";
+import { usePhotoDownload } from "@/lib/use-photo-download";
+import { usePhotoSelection } from "@/lib/photo-selection";
 
 type MemberPhoto = GridPhoto & { photoId: string };
 
@@ -97,6 +99,7 @@ function Photos({ userId }: { userId: string }) {
   });
 
   const list = profile.data?.onboarded ? (mine.data ?? []) : [];
+  const selection = usePhotoSelection(list);
   const scanning = (scan.userId === userId || scan.userId === null) &&
     (scan.phase === "preparing" || scan.phase === "scanning");
   const scanFailed = scan.userId === userId && scan.phase === "error";
@@ -110,8 +113,16 @@ function Photos({ userId }: { userId: string }) {
             {mine.isLoading ? "Loading…" : formatCount(list.length, "photo")}
           </p>
         </div>
-        {list.length > 0 ? <DownloadAllPhotos photos={list} /> : null}
+        {list.length > 0 && !selection.active ? <DownloadAllPhotos photos={list} /> : null}
       </div>
+
+      <PhotoSelectionToolbar
+        photos={selection.selectedPhotos}
+        total={list.length}
+        label="Selected-Photos"
+        onClear={selection.clear}
+        onSelectAll={selection.selectAll}
+      />
 
       {scanning && profile.data?.onboarded && (
         <div role="status" className="mb-6 flex items-center gap-3 rounded-lg border border-border bg-secondary/50 px-4 py-3 text-sm">
@@ -144,7 +155,15 @@ function Photos({ userId }: { userId: string }) {
           description="We have searched the available events. New matches will appear here as events are added."
         />
       ) : (
-        <PhotoGrid photos={list} onOpen={setOpen} showConfidence />
+        <PhotoGrid
+          photos={list}
+          onOpen={setOpen}
+          selected={selection.selected}
+          onToggleSelect={selection.toggle}
+          selectionMode={selection.active}
+          onLongPress={selection.start}
+          showConfidence
+        />
       )}
 
       {open !== null && (
@@ -165,57 +184,7 @@ function Photos({ userId }: { userId: string }) {
 }
 
 function DownloadAllPhotos({ photos }: { photos: MemberPhoto[] }) {
-  const controller = useRef<AbortController | null>(null);
-  const [downloading, setDownloading] = useState(false);
-  const [message, setMessage] = useState("");
-
-  useEffect(() => () => controller.current?.abort(), []);
-
-  async function startDownload() {
-    if (controller.current) return;
-    const abort = new AbortController();
-    controller.current = abort;
-    setDownloading(true);
-    setMessage("Choose a folder for your photos…");
-    try {
-      // Calling the picker directly from this click preserves the browser's
-      // required user activation. Unsupported browsers fall back to a ZIP.
-      const directory = await choosePhotoDirectory();
-      abort.signal.throwIfAborted();
-      setMessage(`Downloading 0 of ${photos.length} photos…`);
-      const result = await downloadPhotos(
-        photos.map((photo) => ({
-          photoId: photo.photoId,
-          fileName: photo.fileName ?? "photo.jpg",
-          fullUrl: photo.fullUrl,
-        })),
-        directory,
-        "My-Photos",
-        abort.signal,
-        (saved, total) => setMessage(`Downloading ${saved} of ${total} photos…`),
-      );
-      if (result.blob) {
-        const url = URL.createObjectURL(result.blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = `${result.folder}.zip`;
-        document.body.append(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 0);
-      }
-      const savedAt = result.blob ? "Your ZIP download has started." : `Saved in the ${result.folder} folder.`;
-      setMessage(result.failed.length
-        ? `${result.saved} photos downloaded. ${result.failed.length} could not be saved; please try again. ${savedAt}`
-        : `All ${result.saved} photos downloaded. ${savedAt}`);
-    } catch (error) {
-      const cancelled = abort.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
-      setMessage(cancelled ? "Download cancelled." : error instanceof Error ? error.message : "The photos could not be downloaded.");
-    } finally {
-      controller.current = null;
-      setDownloading(false);
-    }
-  }
+  const download = usePhotoDownload(photos, "My-Photos");
 
   return (
     <div className="flex max-w-sm flex-col items-end gap-2">
@@ -224,7 +193,7 @@ function DownloadAllPhotos({ photos }: { photos: MemberPhoto[] }) {
           <GlassButton
             type="button"
             variant="quiet"
-            loading={downloading}
+            loading={download.downloading}
             icon={<Download className="size-4" />}
           >
             Download all
@@ -239,13 +208,13 @@ function DownloadAllPhotos({ photos }: { photos: MemberPhoto[] }) {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void startDownload()} className="gap-2">
+            <AlertDialogAction onClick={() => void download.start()} className="gap-2">
               <Download className="size-4" /> Continue &amp; download
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      {message ? <p aria-live="polite" className="text-right text-xs text-muted-foreground">{message}</p> : null}
+      {download.message ? <p aria-live="polite" className="text-right text-xs text-muted-foreground">{download.message}</p> : null}
     </div>
   );
 }

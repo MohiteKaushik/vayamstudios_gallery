@@ -1,4 +1,5 @@
 import { Check } from "lucide-react";
+import { useRef, type PointerEvent as ReactPointerEvent } from "react";
 import { cn } from "@/lib/utils";
 import { Shimmer } from "./ui-kit";
 import { photoAspectRatio } from "@/lib/photo-layout";
@@ -28,6 +29,8 @@ export function PhotoGrid({
   onOpen,
   selected,
   onToggleSelect,
+  selectionMode = false,
+  onLongPress,
   showConfidence,
   singleColumn = false,
   showFileNames = false,
@@ -36,6 +39,8 @@ export function PhotoGrid({
   onOpen: (index: number) => void;
   selected?: Set<string>;
   onToggleSelect?: (id: string) => void;
+  selectionMode?: boolean;
+  onLongPress?: (id: string) => void;
   showConfidence?: boolean;
   singleColumn?: boolean;
   showFileNames?: boolean;
@@ -48,24 +53,107 @@ export function PhotoGrid({
 
         return (
           <div key={photo.id} className={singleColumn ? "" : "mb-3 break-inside-avoid"}>
-            <div
-              role="button"
-              tabIndex={0}
-              aria-label={`Open ${photo.fileName ?? "photo"}`}
-              onClick={() => onOpen(index)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onOpen(index);
-                }
-              }}
-              className={cn(
-                "group press relative w-full overflow-hidden rounded-2xl bg-secondary",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                isSelected && "ring-2 ring-accent ring-offset-2 ring-offset-background",
-              )}
-              style={{ aspectRatio: `${ratio}` }}
-            >
+            <PhotoTile
+              photo={photo}
+              ratio={ratio}
+              index={index}
+              isSelected={!!isSelected}
+              selectionMode={selectionMode}
+              onOpen={onOpen}
+              {...(onToggleSelect ? { onToggleSelect } : {})}
+              {...(onLongPress ? { onLongPress } : {})}
+              {...(showConfidence !== undefined ? { showConfidence } : {})}
+            />
+            {showFileNames && <p className="mt-1 break-all px-1 text-xs text-muted-foreground">{photo.fileName ?? photo.id}</p>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PhotoTile({
+  photo,
+  ratio,
+  index,
+  isSelected,
+  selectionMode,
+  onOpen,
+  onToggleSelect,
+  onLongPress,
+  showConfidence,
+}: {
+  photo: GridPhoto;
+  ratio: number;
+  index: number;
+  isSelected: boolean;
+  selectionMode: boolean;
+  onOpen: (index: number) => void;
+  onToggleSelect?: (id: string) => void;
+  onLongPress?: (id: string) => void;
+  showConfidence?: boolean;
+}) {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const origin = useRef({ x: 0, y: 0 });
+  const held = useRef(false);
+
+  const cancelHold = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+  };
+  const beginHold = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!onLongPress || (event.pointerType === "mouse" && event.button !== 0)) return;
+    cancelHold();
+    held.current = false;
+    origin.current = { x: event.clientX, y: event.clientY };
+    timer.current = setTimeout(() => {
+      held.current = true;
+      onLongPress(photo.id);
+      navigator.vibrate?.(12);
+    }, 500);
+  };
+  const moveHold = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (Math.hypot(event.clientX - origin.current.x, event.clientY - origin.current.y) > 10) cancelHold();
+  };
+  const activate = () => {
+    if (held.current) {
+      held.current = false;
+      return;
+    }
+    if (selectionMode && onToggleSelect) onToggleSelect(photo.id);
+    else onOpen(index);
+  };
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={selectionMode
+        ? `${isSelected ? "Deselect" : "Select"} ${photo.fileName ?? "photo"}`
+        : `Open ${photo.fileName ?? "photo"}`}
+      aria-pressed={selectionMode ? isSelected : undefined}
+      onClick={activate}
+      onPointerDown={beginHold}
+      onPointerMove={moveHold}
+      onPointerUp={cancelHold}
+      onPointerCancel={cancelHold}
+      onPointerLeave={cancelHold}
+      onContextMenu={(event) => {
+        if (onLongPress) event.preventDefault();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          activate();
+        }
+      }}
+      className={cn(
+        "group press relative w-full touch-pan-y select-none overflow-hidden rounded-2xl bg-secondary",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        isSelected && "ring-2 ring-accent ring-offset-2 ring-offset-background",
+      )}
+      style={{ aspectRatio: `${ratio}` }}
+    >
               <img
                 src={photo.thumbUrl}
                 alt={photo.fileName ?? "Photo"}
@@ -90,6 +178,7 @@ export function PhotoGrid({
                 <button
                   aria-label={isSelected ? `Deselect ${photo.fileName ?? "photo"}` : `Select ${photo.fileName ?? "photo"}`}
                   aria-pressed={!!isSelected}
+                  onPointerDown={(event) => event.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
                     onToggleSelect(photo.id);
@@ -98,17 +187,14 @@ export function PhotoGrid({
                     "press absolute right-2 top-2 flex size-7 items-center justify-center rounded-full border border-hairline transition-opacity focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     isSelected
                       ? "bg-accent text-accent-foreground opacity-100"
-                      : "glass-chrome text-foreground opacity-0 group-hover:opacity-100",
+                      : selectionMode
+                        ? "bg-background/20 text-foreground/70 opacity-100 backdrop-blur-[1px]"
+                        : "glass-chrome text-foreground opacity-0 group-hover:opacity-100",
                   )}
                 >
-                  <Check className="size-4" strokeWidth={2.4} />
+                  {isSelected ? <Check className="size-4" strokeWidth={2.4} /> : null}
                 </button>
               )}
-            </div>
-            {showFileNames && <p className="mt-1 break-all px-1 text-xs text-muted-foreground">{photo.fileName ?? photo.id}</p>}
-          </div>
-        );
-      })}
     </div>
   );
 }

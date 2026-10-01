@@ -6,9 +6,17 @@ import { layoutPhotos } from "@/lib/photo-layout";
 export function PagedPhotoGrid({
   pages,
   onOpen,
+  selected,
+  onToggleSelect,
+  selectionMode,
+  onLongPress,
 }: {
   pages: PhotoPage<GridPhoto>[];
   onOpen: (index: number) => void;
+  selected?: Set<string>;
+  onToggleSelect?: (id: string) => void;
+  selectionMode?: boolean;
+  onLongPress?: (id: string) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -28,7 +36,15 @@ export function PagedPhotoGrid({
     <div ref={container} data-photo-layout className="relative" style={{ height: width ? layout.height : undefined }}>
       {width > 0 && photos.map((photo, index) => (
         <div key={photo.id} data-photo-id={photo.id} className="absolute" style={layout.items[index]}>
-          <PhotoGrid singleColumn photos={[photo]} onOpen={() => onOpen(index)} />
+          <PhotoGrid
+            singleColumn
+            photos={[photo]}
+            onOpen={() => onOpen(index)}
+            {...(selected ? { selected } : {})}
+            {...(onToggleSelect ? { onToggleSelect } : {})}
+            {...(selectionMode !== undefined ? { selectionMode } : {})}
+            {...(onLongPress ? { onLongPress } : {})}
+          />
         </div>
       ))}
     </div>
